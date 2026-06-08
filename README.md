@@ -228,3 +228,7 @@ PaintsUndo-Vector/
 ## License
 
 MIT License
+
+## 致谢
+
+- **glm** - 笔刷系统参考
