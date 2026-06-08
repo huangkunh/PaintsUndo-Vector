@@ -227,3 +227,32 @@ PaintsUndo-Vector/
 ## License
 
 MIT License
+
+
+## Web UI
+
+A Gradio-based web interface is available for easy use without command line.
+
+### Quick Start
+
+```bash
+pip install -r requirements.txt
+python app.py
+```
+
+Then open http://localhost:7860 in your browser.
+
+### Features
+
+- Upload images (PNG/JPG)
+- Adjust stroke count, width, iterations, learning rate
+- Real-time preview of generated results
+- Export SVG vector files and JSON stroke data
+
+### Usage Steps
+
+1. Upload an image
+2. Adjust parameters (or use defaults)
+3. Click Start Generation
+4. Wait for optimization to complete
+5. Download SVG or JSON files
