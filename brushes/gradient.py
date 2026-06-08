@@ -1,7 +1,7 @@
 """
-渐变笔刷 - 基于 enazo 渐变工作方式
+渐变笔刷 - 基于 glm 渐变工作方式
 
-enazo 渐变定义：
+glm 渐变定义：
 [39, "渐变", 2, render_func, {disCollectPoints: true}]
 [40, "渐变背景", 2, render_func, {disCollectPoints: true, hide: true}]
 
@@ -11,7 +11,7 @@ enazo 渐变定义：
 - 支持透明度渐变（从有色到透明）
 - 渐变背景使用 destination-over 合成模式
 
-渲染逻辑（从 enazo 源码提取）：
+渲染逻辑（从 glm 源码提取）：
 1. 创建从起点到终点的线性渐变
 2. 起点颜色为指定颜色（完全不透明）
 3. 终点颜色为指定颜色（完全透明）
@@ -31,7 +31,7 @@ class GradientBrush(BaseBrush):
     """
     渐变笔刷
     
-    基于 enazo 的渐变渲染逻辑，创建线性渐变效果。
+    基于 glm 的渐变渲染逻辑，创建线性渐变效果。
     """
     
     brush_id = 39

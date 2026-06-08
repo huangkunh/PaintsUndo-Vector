@@ -1,7 +1,7 @@
 """
-网点笔刷 - 基于 enazo 网点工作方式
+网点笔刷 - 基于 glm 网点工作方式
 
-enazo 网点定义：
+glm 网点定义：
 [32, "💊", 2, render_func, {haveAlpha: true}]
 [33, "网点", 2, render_func, {haveAlpha: true}]
 [34, "网点马克", 2, render_func, {haveAlpha: true}]
@@ -27,7 +27,7 @@ class HalftoneBrush(BaseBrush):
     """
     网点笔刷
     
-    基于 enazo 的网点渲染逻辑，半色调网点效果。
+    基于 glm 的网点渲染逻辑，半色调网点效果。
     """
     
     brush_id = 33

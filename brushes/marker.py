@@ -1,7 +1,7 @@
 """
-马克笔笔刷 - 基于 enazo 马克笔工作方式
+马克笔笔刷 - 基于 glm 马克笔工作方式
 
-enazo 马克笔定义：
+glm 马克笔定义：
 [0, "马克笔", 2, render_func, {haveAlpha: true, disCollectPoints: true}]
 
 核心特征：
@@ -10,7 +10,7 @@ enazo 马克笔定义：
 - 禁用点收集（disCollectPoints: true），直接使用原始点序列
 - globalAlpha 控制整体透明度
 
-渲染逻辑（从 enazo 源码提取）：
+渲染逻辑（从 glm 源码提取）：
 1. save() 保存画布状态
 2. 设置 globalAlpha = opacity
 3. beginPath() + moveTo(points[0])
@@ -35,7 +35,7 @@ class MarkerBrush(BaseBrush):
     """
     马克笔笔刷
     
-    基于 enazo 的马克笔渲染逻辑，使用二次贝塞尔曲线进行平滑插值，
+    基于 glm 的马克笔渲染逻辑，使用二次贝塞尔曲线进行平滑插值，
     支持透明度叠加效果。
     """
     
@@ -139,7 +139,7 @@ class MarkerBrush(BaseBrush):
         采样贝塞尔曲线上的点。
         
         使用 de Casteljau 算法进行任意阶贝塞尔曲线求值。
-        对应 enazo 中的 quadraticCurveTo 插值逻辑。
+        对应 glm 中的 quadraticCurveTo 插值逻辑。
         """
         n = control_points.shape[0]
         if n < 2:
@@ -195,7 +195,7 @@ class MarkerBrush(BaseBrush):
         """
         Alpha blending 合成操作。
         
-        对应 enazo 中的 globalAlpha 叠加逻辑：
+        对应 glm 中的 globalAlpha 叠加逻辑：
         result = foreground * alpha_fg + background * (1 - alpha_fg)
         """
         alpha_fg = foreground[3:4]  # [1, H, W]
@@ -217,7 +217,7 @@ class MarkerBrush(BaseBrush):
         """
         将马克笔笔画转换为 SVG 路径。
         
-        使用二次贝塞尔曲线（Q 命令），对应 enazo 的 quadraticCurveTo。
+        使用二次贝塞尔曲线（Q 命令），对应 glm 的 quadraticCurveTo。
         """
         cp = stroke.control_points.detach().cpu().numpy()
         w = stroke.canvas_width

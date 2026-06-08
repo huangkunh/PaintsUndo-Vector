@@ -1,7 +1,7 @@
 """
-排线笔刷 - 基于 enazo 排线工作方式
+排线笔刷 - 基于 glm 排线工作方式
 
-enazo 排线定义：
+glm 排线定义：
 [37, "排线", 2, render_func, {haveAlpha: true}]
 
 核心特征：
@@ -24,7 +24,7 @@ class HatchingBrush(BaseBrush):
     """
     排线笔刷
     
-    基于 enazo 的排线渲染逻辑，平行线条填充效果。
+    基于 glm 的排线渲染逻辑，平行线条填充效果。
     """
     
     brush_id = 37

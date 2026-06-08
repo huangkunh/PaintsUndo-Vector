@@ -1,12 +1,12 @@
 """
 笔刷基类 - 定义可微笔刷的统一接口
 
-基于 enazo 笔刷工作方式，每种笔刷需要实现：
+基于 glm 笔刷工作方式，每种笔刷需要实现：
 1. 参数化定义（控制点、宽度、颜色等）
 2. 可微渲染方法
 3. SVG 导出方法
 
-enazo 笔刷工作方式的核心概念：
+glm 笔刷工作方式的核心概念：
 - 笔刷接收 (canvas_context, points, color, size, opacity) 参数
 - points 是 [x0, y0, x1, y1, ...] 的扁平坐标数组
 - 不同笔刷使用不同的曲线插值策略（二次贝塞尔、直线等）
@@ -33,7 +33,7 @@ class BrushStroke(nn.Module):
     - opacity: 透明度（标量）
     - pressure: 压感曲线参数（用于变宽笔画）
     
-    对应 enazo 中的笔画数据结构：
+    对应 glm 中的笔画数据结构：
     points 数组 + color + size + opacity
     """
     
@@ -121,12 +121,12 @@ class BaseBrush(nn.Module):
     """
     笔刷基类 - 定义可微笔刷的统一接口。
     
-    基于 enazo 笔刷工作方式，每种笔刷需要实现：
+    基于 glm 笔刷工作方式，每种笔刷需要实现：
     - render(): 可微渲染方法，将笔画参数渲染为像素图像
     - to_svg_path(): 将笔画转换为 SVG 路径
     - initialize_strokes(): 初始化一组笔画
     
-    enazo 笔刷定义格式：
+    glm 笔刷定义格式：
     [id, "名称", 类型, 渲染函数, {属性}]
     
     属性包括：

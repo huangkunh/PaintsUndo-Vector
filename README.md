@@ -7,13 +7,13 @@
 PaintsUndo-Vector 采用**方案B（基于优化的高质量复刻）**实现，核心思路是：
 
 1. **放弃视频扩散模型**，转而使用可微渲染 + 梯度优化
-2. **采用文件笔刷工作方式**，将 enazo 绘画应用中的多种笔刷（马克笔、铅笔、水彩、压感笔等）作为可微渲染的基本图元
+2. **采用文件笔刷工作方式**，将 glm 绘画应用中的多种笔刷（马克笔、铅笔、水彩、压感笔等）作为可微渲染的基本图元
 3. **多阶段渐进式优化**，模拟人类绘画过程：底色 → 形体刻画 → 细节线稿
 4. **输出矢量笔画**，可直接导入 Illustrator / SVG 编辑器二次编辑
 
 ## 核心特性
 
-- 🎨 **9种笔刷类型**：马克笔、铅笔、水彩、压感笔、喷笔、渐变、排线、网点等，源自 enazo 笔刷系统
+- 🎨 **9种笔刷类型**：马克笔、铅笔、水彩、压感笔、喷笔、渐变、排线、网点等，源自 glm 笔刷系统
 - 🔄 **渐进式优化**：三阶段优化策略模拟人类绘画过程
 - 🧠 **注意力引导**：基于残差/边缘/显著性/颜色的注意力机制引导笔画放置
 - 🖌️ **人类绘画模拟**：笔画排序、绘画节奏、颜色混合模拟真实画家
@@ -128,7 +128,7 @@ exporter.export(result["strokes"], result["brush_names"], "output/result.svg")
 
 ```
 PaintsUndo-Vector/
-├── brushes/             # 笔刷模块（源自 enazo）
+├── brushes/             # 笔刷模块（源自 glm）
 │   ├── __init__.py
 │   ├── base.py          # 笔刷基类 + BrushStroke 参数化
 │   ├── marker.py        # 马克笔（二次贝塞尔曲线）
@@ -204,7 +204,7 @@ PaintsUndo-Vector/
 
 ### 笔刷工作方式
 
-本项目采用 enazo 绘画应用的笔刷工作方式，每种笔刷定义包含：
+本项目采用 glm 绘画应用的笔刷工作方式，每种笔刷定义包含：
 
 1. **渲染函数**：接收画布上下文、点序列、颜色、大小、透明度参数
 2. **点收集策略**：不同笔刷有不同的采样方式（如马克笔使用二次贝塞尔曲线插值）
@@ -223,7 +223,7 @@ PaintsUndo-Vector/
 - [DiffSketcher](https://github.com/ximinng/DiffSketcher) - 可微矢量渲染的先驱工作
 - [pydiffvg](https://github.com/BachiLi/diffvg) - Adobe 开源的可微矢量渲染库
 - [Paints-Undo](https://github.com/lllyasviel/Paints-UNDO) - 视频扩散模型绘画还原
-- [enazo](https://enazo.cn) - 笔刷系统参考
+- [glm](https://glm.cn) - 笔刷系统参考
 
 ## License
 

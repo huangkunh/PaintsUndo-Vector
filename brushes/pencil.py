@@ -1,7 +1,7 @@
 """
-铅笔笔刷 - 基于 enazo 铅笔工作方式
+铅笔笔刷 - 基于 glm 铅笔工作方式
 
-enazo 铅笔定义：
+glm 铅笔定义：
 [6, "铅笔", 2, render_func, {haveAlpha: true}]
 
 核心特征：
@@ -30,7 +30,7 @@ class PencilBrush(BaseBrush):
     """
     铅笔笔刷
     
-    基于 enazo 的铅笔渲染逻辑，细线条 + 铅笔纹理效果。
+    基于 glm 的铅笔渲染逻辑，细线条 + 铅笔纹理效果。
     """
     
     brush_id = 6

@@ -1,7 +1,7 @@
 """
-压感笔刷 - 基于 enazo 压感笔工作方式
+压感笔刷 - 基于 glm 压感笔工作方式
 
-enazo 压感笔定义：
+glm 压感笔定义：
 [5, "压感v3", 2, render_func, {haveAlpha: true}]
 [23, "新压感尖头高性能", 2, render_func, {haveAlpha: true}]
 
@@ -11,7 +11,7 @@ enazo 压感笔定义：
 - 尖头效果：笔画两端细、中间粗
 - 高性能版本使用优化的路径构建算法
 
-渲染逻辑（从 enazo 源码提取）：
+渲染逻辑（从 glm 源码提取）：
 1. 计算每个控制点处的法线方向
 2. 根据压力值（宽度参数）沿法线方向偏移
 3. 构建闭合多边形路径
@@ -32,7 +32,7 @@ class PressureBrush(BaseBrush):
     """
     压感笔刷
     
-    基于 enazo 的压感v3渲染逻辑，笔画宽度随位置变化。
+    基于 glm 的压感v3渲染逻辑，笔画宽度随位置变化。
     使用多边形近似实现变宽笔画效果。
     """
     
@@ -105,7 +105,7 @@ class PressureBrush(BaseBrush):
         可微渲染压感笔画。
         
         通过在曲线两侧构建偏移点，形成变宽的笔画形状。
-        对应 enazo 中的多边形路径构建逻辑。
+        对应 glm 中的多边形路径构建逻辑。
         """
         H, W = self.canvas_size[1], self.canvas_size[0]
         
@@ -238,7 +238,7 @@ class PressureSharpBrush(PressureBrush):
     """
     新压感尖头高性能笔刷
     
-    基于 enazo 的"新压感尖头高性能"笔刷，具有更尖锐的笔尖效果。
+    基于 glm 的"新压感尖头高性能"笔刷，具有更尖锐的笔尖效果。
     使用优化的路径构建算法，性能更好。
     """
     
