@@ -18,6 +18,7 @@ from typing import List, Optional, Tuple, Dict, Any
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
 
@@ -30,6 +31,7 @@ class BrushStroke(nn.Module):
     - width: 笔画基础宽度（标量）
     - color: RGBA 颜色 [4]
     - opacity: 透明度（标量）
+    - pressure: 压感曲线参数（用于变宽笔画）
     
     对应 enazo 中的笔画数据结构：
     points 数组 + color + size + opacity
@@ -59,7 +61,6 @@ class BrushStroke(nn.Module):
         
         # RGBA 颜色 - 使用 sigmoid 约束在 [0, 1]
         if init_color is not None:
-            # 将 init_color 转换为 raw 参数
             raw_c = torch.logit(torch.clamp(init_color.to(device), 0.01, 0.99))
             self.raw_color = nn.Parameter(raw_c)
         else:
@@ -179,25 +180,16 @@ class BaseBrush(nn.Module):
         
         如果提供了目标图像，会使用启发式策略（如边缘检测、颜色聚类）
         来初始化笔画的位置和颜色，加速收敛。
-        
-        Args:
-            num_strokes: 笔画数量
-            target_image: 目标图像 [C, H, W]，用于启发式初始化
-            init_width_range: 宽度初始化范围 (min, max)
-            num_control_points: 每条笔画的控制点数
         """
         strokes = []
         for i in range(num_strokes):
-            # 随机初始化宽度
             width = np.random.uniform(init_width_range[0], init_width_range[1])
             
-            # 初始化颜色
             if target_image is not None:
-                # 从目标图像中采样颜色
                 color = self._sample_color_from_image(target_image)
             else:
                 color = torch.rand(4)
-                color[3] = 1.0  # 完全不透明
+                color[3] = 1.0
             
             stroke = self.create_stroke(
                 init_width=width,
@@ -214,7 +206,6 @@ class BaseBrush(nn.Module):
         y = np.random.randint(0, H)
         x = np.random.randint(0, W)
         color = image[:, y, x].clone()
-        # 添加随机扰动
         color[:3] += torch.randn(3, device=image.device) * 0.05
         color[:3] = color[:3].clamp(0, 1)
         alpha = torch.tensor([1.0], device=image.device)
@@ -229,14 +220,7 @@ class BaseBrush(nn.Module):
         """
         渲染单条笔画到画布上。
         
-        这是核心渲染方法，子类必须实现。
-        
-        Args:
-            stroke: 笔画参数
-            canvas: 当前画布 [C, H, W]，如果为 None 则创建空白画布
-            
-        Returns:
-            渲染后的画布 [C, H, W]
+        子类必须实现此方法。
         """
         raise NotImplementedError("Subclasses must implement render_stroke()")
     
@@ -245,14 +229,10 @@ class BaseBrush(nn.Module):
         strokes: List[BrushStroke],
         canvas: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """
-        渲染多条笔画到画布上。
-        
-        按顺序逐条渲染，支持透明度叠加（haveAlpha）。
-        """
+        """渲染多条笔画到画布上。"""
         if canvas is None:
             canvas = torch.ones(4, self.canvas_size[1], self.canvas_size[0], device=self.device)
-            canvas[3] = 0.0  # 透明背景
+            canvas[3] = 0.0
         
         for stroke in strokes:
             canvas = self.render_stroke(stroke, canvas)
@@ -260,21 +240,15 @@ class BaseBrush(nn.Module):
         return canvas
     
     def to_svg_path(self, stroke: BrushStroke) -> str:
-        """
-        将笔画转换为 SVG 路径字符串。
-        
-        子类可以覆盖此方法以实现特定笔刷的 SVG 输出。
-        """
+        """将笔画转换为 SVG 路径字符串。"""
         cp = stroke.control_points.detach().cpu().numpy()
         w = stroke.canvas_width
         h = stroke.canvas_height
         
-        # 将归一化坐标转换为像素坐标
         points = cp.copy()
         points[:, 0] *= w
         points[:, 1] *= h
         
-        # 构建二次贝塞尔曲线路径
         if len(points) < 2:
             return ""
         
@@ -283,7 +257,6 @@ class BaseBrush(nn.Module):
         if len(points) == 2:
             path += f" L {points[1][0]:.2f},{points[1][1]:.2f}"
         elif len(points) >= 3:
-            # 使用二次贝塞尔曲线
             for i in range(1, len(points) - 1, 2):
                 if i + 1 < len(points):
                     path += f" Q {points[i][0]:.2f},{points[i][1]:.2f} {points[i+1][0]:.2f},{points[i+1][1]:.2f}"

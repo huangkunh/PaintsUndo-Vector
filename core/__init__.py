@@ -1,8 +1,19 @@
 """
-PaintsUndo-Vector: 基于可微渲染优化的矢量笔画生成工具
-
 核心模块初始化
+
+PaintsUndo-Vector 核心组件：
+- renderer: 可微渲染器
+- losses: 损失函数
+- optimizer: 多阶段优化器
+- scheduler: 阶段调度器
+- attention: 注意力引导
+- painting_sim: 人类绘画模拟
+- cli: 命令行入口
 """
 
-__version__ = "0.1.0"
-__author__ = "PaintsUndo-Vector Team"
+from core.renderer import DifferentiableRenderer
+from core.losses import CombinedLoss, PixelLoss, PerceptualLoss
+from core.optimizer import MultiStageOptimizer, StageConfig, DEFAULT_STAGE_CONFIGS
+from core.scheduler import StageScheduler
+from core.attention import AttentionMap
+from core.painting_sim import sort_strokes_human_like, simulate_painting_rhythm

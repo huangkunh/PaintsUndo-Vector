@@ -1,10 +1,15 @@
 """
-SVG 导出模块
+SVG 导出模块 - 高质量矢量笔画导出
 
 将优化后的笔画参数导出为 SVG 文件，
 支持多种笔刷的 SVG 路径生成和滤镜效果。
 
-对应方案B阶段六：导出矢量笔画与回放
+改进：
+1. 更精确的贝塞尔曲线 SVG 路径
+2. 变宽笔画 SVG 实现（使用多边形近似）
+3. 水彩/喷笔 SVG 滤镜
+4. 绘画过程动画（SMIL + CSS）
+5. 分层导出（每个阶段一个 SVG 组）
 """
 
 import os
@@ -24,6 +29,7 @@ class SVGExporter:
     将笔画列表导出为 SVG 文件，支持：
     - 多种笔刷的 SVG 路径
     - SVG 滤镜（水彩扩散、铅笔纹理等）
+    - 变宽笔画（多边形近似）
     - 分阶段导出
     - 动画回放（SMIL 动画）
     """
@@ -43,6 +49,7 @@ class SVGExporter:
         output_path: str,
         include_filters: bool = True,
         include_animation: bool = False,
+        stages_history: Optional[List[Dict]] = None,
     ):
         """
         导出笔画为 SVG 文件。
@@ -53,6 +60,7 @@ class SVGExporter:
             output_path: 输出文件路径
             include_filters: 是否包含 SVG 滤镜
             include_animation: 是否包含 SMIL 动画
+            stages_history: 阶段历史（用于分层导出）
         """
         dwg = svgwrite.Drawing(
             output_path,
@@ -71,47 +79,25 @@ class SVGExporter:
         if include_filters:
             self._add_filters(dwg)
         
-        # 添加笔画
-        for idx, (stroke, brush_name) in enumerate(zip(strokes, brush_names)):
-            self._add_stroke_to_svg(dwg, stroke, brush_name, idx, include_animation)
+        # 分层导出
+        if stages_history:
+            for stage_idx, stage_data in enumerate(stages_history):
+                stage_group = dwg.g(id=f"stage_{stage_idx + 1}")
+                stage_strokes = stage_data["strokes"]
+                stage_brushes = stage_data["brush_names"]
+                
+                for i, (stroke, brush_name) in enumerate(zip(stage_strokes, stage_brushes)):
+                    self._add_stroke_to_group(dwg, stage_group, stroke, brush_name, i,
+                                             include_animation=include_animation)
+                
+                dwg.add(stage_group)
+        else:
+            for i, (stroke, brush_name) in enumerate(zip(strokes, brush_names)):
+                self._add_stroke_to_svg(dwg, stroke, brush_name, i,
+                                       include_animation=include_animation)
         
         dwg.save()
         print(f"SVG exported to: {output_path}")
-    
-    def export_stages(
-        self,
-        stages_history: List[Dict],
-        output_dir: str,
-    ):
-        """
-        分阶段导出 SVG 文件。
-        
-        每个阶段生成一个独立的 SVG 文件，
-        对应方案B中的 History_1 → step_1.svg, History_2 → step_2.svg 等。
-        """
-        os.makedirs(output_dir, exist_ok=True)
-        
-        accumulated_strokes = []
-        accumulated_brushes = []
-        
-        for stage_idx, stage_data in enumerate(stages_history):
-            accumulated_strokes.extend(stage_data["strokes"])
-            accumulated_brushes.extend(stage_data["brush_names"])
-            
-            output_path = os.path.join(output_dir, f"step_{stage_idx + 1}.svg")
-            self.export(
-                accumulated_strokes,
-                accumulated_brushes,
-                output_path,
-            )
-        
-        # 最终完整版
-        final_path = os.path.join(output_dir, "step_final.svg")
-        self.export(
-            accumulated_strokes,
-            accumulated_brushes,
-            final_path,
-        )
     
     def _add_stroke_to_svg(
         self,
@@ -122,33 +108,228 @@ class SVGExporter:
         include_animation: bool = False,
     ):
         """添加单条笔画到 SVG"""
-        brush_cls = BRUSH_REGISTRY[brush_name]
-        brush = brush_cls(canvas_size=(self.canvas_width, self.canvas_height))
-        
-        path_data = brush.to_svg_path(stroke)
-        if not path_data:
+        brush = BRUSH_REGISTRY.get(brush_name)
+        if brush is None:
             return
         
-        attrs = brush.get_svg_attributes(stroke)
+        # 获取笔刷实例
+        brush_inst = brush(canvas_size=(self.canvas_width, self.canvas_height))
         
-        path = dwg.path(d=path_data, **attrs)
+        # 变宽笔画使用多边形近似
+        if brush_name in ("pressure", "pressure_sharp"):
+            self._add_variable_width_stroke(dwg, stroke, brush_name, index,
+                                           include_animation)
+        else:
+            path_d = brush_inst.to_svg_path(stroke)
+            if not path_d:
+                return
+            
+            attrs = brush_inst.get_svg_attributes(stroke)
+            path = dwg.path(d=path_d, **attrs)
+            
+            if include_animation:
+                self._add_path_animation(path, index)
+            
+            dwg.add(path)
+    
+    def _add_stroke_to_group(
+        self,
+        dwg: svgwrite.Drawing,
+        group: svgwrite.container.Group,
+        stroke: BrushStroke,
+        brush_name: str,
+        index: int,
+        include_animation: bool = False,
+    ):
+        """添加单条笔画到 SVG 组"""
+        brush = BRUSH_REGISTRY.get(brush_name)
+        if brush is None:
+            return
         
-        # 添加动画
+        brush_inst = brush(canvas_size=(self.canvas_width, self.canvas_height))
+        
+        if brush_name in ("pressure", "pressure_sharp"):
+            self._add_variable_width_stroke_to_group(dwg, group, stroke, brush_name,
+                                                    index, include_animation)
+        else:
+            path_d = brush_inst.to_svg_path(stroke)
+            if not path_d:
+                return
+            
+            attrs = brush_inst.get_svg_attributes(stroke)
+            path = dwg.path(d=path_d, **attrs)
+            
+            if include_animation:
+                self._add_path_animation(path, index)
+            
+            group.add(path)
+    
+    def _add_variable_width_stroke(
+        self,
+        dwg,
+        stroke: BrushStroke,
+        brush_name: str,
+        index: int,
+        include_animation: bool = False,
+    ):
+        """添加变宽笔画（使用多边形近似）"""
+        cp = stroke.control_points.detach().cpu().numpy()
+        w = self.canvas_width
+        h = self.canvas_height
+        
+        points = cp.copy()
+        points[:, 0] *= w
+        points[:, 1] *= h
+        
+        if len(points) < 2:
+            return
+        
+        # 计算变宽多边形
+        polygon_points = self._compute_variable_width_polygon(
+            points, stroke, brush_name
+        )
+        
+        if len(polygon_points) < 3:
+            return
+        
+        color = stroke.color.detach().cpu().numpy()
+        r, g, b = (color[:3] * 255).astype(int)
+        opacity = stroke.opacity.detach().cpu().item()
+        
+        polygon_str = " ".join(f"{p[0]:.2f},{p[1]:.2f}" for p in polygon_points)
+        
+        polygon = dwg.polygon(
+            points=[(p[0], p[1]) for p in polygon_points],
+            fill=f"rgb({r},{g},{b})",
+            fill_opacity=f"{opacity:.3f}",
+            stroke="none",
+        )
+        
         if include_animation:
-            # SMIL 动画：笔画逐步绘制
-            duration = 0.5  # 每条笔画0.5秒
-            delay = index * duration
-            path.add(dwg.animate(
-                attributeName="stroke-dashoffset",
-                from_="1000",
-                to="0",
-                dur=f"{duration}s",
-                begin=f"{delay}s",
-                fill="freeze",
-            ))
-            path["stroke-dasharray"] = "1000"
+            self._add_polygon_animation(polygon, index)
         
-        dwg.add(path)
+        dwg.add(polygon)
+    
+    def _add_variable_width_stroke_to_group(
+        self,
+        dwg,
+        group,
+        stroke: BrushStroke,
+        brush_name: str,
+        index: int,
+        include_animation: bool = False,
+    ):
+        """添加变宽笔画到组"""
+        cp = stroke.control_points.detach().cpu().numpy()
+        w = self.canvas_width
+        h = self.canvas_height
+        
+        points = cp.copy()
+        points[:, 0] *= w
+        points[:, 1] *= h
+        
+        if len(points) < 2:
+            return
+        
+        polygon_points = self._compute_variable_width_polygon(
+            points, stroke, brush_name
+        )
+        
+        if len(polygon_points) < 3:
+            return
+        
+        color = stroke.color.detach().cpu().numpy()
+        r, g, b = (color[:3] * 255).astype(int)
+        opacity = stroke.opacity.detach().cpu().item()
+        
+        polygon = dwg.polygon(
+            points=[(p[0], p[1]) for p in polygon_points],
+            fill=f"rgb({r},{g},{b})",
+            fill_opacity=f"{opacity:.3f}",
+            stroke="none",
+        )
+        
+        group.add(polygon)
+    
+    def _compute_variable_width_polygon(
+        self,
+        points: np.ndarray,
+        stroke: BrushStroke,
+        brush_name: str,
+    ) -> np.ndarray:
+        """
+        计算变宽笔画的多边形近似。
+        
+        沿笔画路径计算法线方向，根据压力曲线偏移，
+        生成闭合多边形实现变宽效果。
+        """
+        n = len(points)
+        base_width = stroke.width.detach().cpu().item()
+        
+        # 计算每个点的切线方向
+        tangents = np.zeros_like(points)
+        for i in range(n):
+            if i == 0:
+                tangents[i] = points[1] - points[0]
+            elif i == n - 1:
+                tangents[i] = points[-1] - points[-2]
+            else:
+                tangents[i] = points[i + 1] - points[i - 1]
+        
+        # 归一化
+        lengths = np.sqrt((tangents ** 2).sum(axis=1, keepdims=True)) + 1e-8
+        tangents = tangents / lengths
+        
+        # 法线方向（切线旋转90度）
+        normals = np.stack([-tangents[:, 1], tangents[:, 0]], axis=1)
+        
+        # 计算每个点的宽度（压力曲线）
+        widths = np.zeros(n)
+        for i in range(n):
+            t = i / (n - 1)
+            if brush_name == "pressure_sharp":
+                # 尖头：起始端窄
+                pressure = 1.0 - np.exp(-3.0 * t)
+            else:
+                # 钟形：两端细中间粗
+                pressure = np.sin(np.pi * t)
+            widths[i] = base_width * pressure / 2.0
+        
+        # 构建多边形
+        left_points = points + normals * widths[:, np.newaxis]
+        right_points = points - normals * widths[:, np.newaxis]
+        
+        # 闭合多边形
+        polygon = np.concatenate([left_points, right_points[::-1]], axis=0)
+        
+        return polygon
+    
+    def _add_path_animation(self, path, index: int):
+        """添加路径绘制动画"""
+        duration = 0.5
+        delay = index * duration * 0.3
+        path.add(path.root.animate(
+            attributeName="stroke-dashoffset",
+            from_="1000",
+            to="0",
+            dur=f"{duration}s",
+            begin=f"{delay}s",
+            fill="freeze",
+        ))
+        path["stroke-dasharray"] = "1000"
+    
+    def _add_polygon_animation(self, polygon, index: int):
+        """添加多边形淡入动画"""
+        duration = 0.3
+        delay = index * 0.15
+        polygon.add(polygon.root.animate(
+            attributeName="fill-opacity",
+            from_="0",
+            to=polygon.get("fill-opacity", "1"),
+            dur=f"{duration}s",
+            begin=f"{delay}s",
+            fill="freeze",
+        ))
     
     def _add_filters(self, dwg: svgwrite.Drawing):
         """添加 SVG 滤镜定义"""
@@ -190,3 +371,15 @@ class SVGExporter:
             scale="1",
         )
         defs.add(pencil_filter)
+        
+        # 喷笔柔和滤镜
+        airbrush_filter = defs.filter(
+            id="airbrush-filter",
+            size=("120%", "120%"),
+            x="-10%", y="-10%",
+        )
+        airbrush_filter.feGaussianBlur(
+            in_="SourceGraphic",
+            stdDeviation="3",
+        )
+        defs.add(airbrush_filter)
