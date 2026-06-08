@@ -223,12 +223,7 @@ PaintsUndo-Vector/
 - [DiffSketcher](https://github.com/ximinng/DiffSketcher) - 可微矢量渲染的先驱工作
 - [pydiffvg](https://github.com/BachiLi/diffvg) - Adobe 开源的可微矢量渲染库
 - [Paints-Undo](https://github.com/lllyasviel/Paints-UNDO) - 视频扩散模型绘画还原
-- [glm](https://glm.cn) - 笔刷系统参考
 
 ## License
 
 MIT License
-
-## 致谢
-
-- **glm** - 笔刷系统参考
