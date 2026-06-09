@@ -173,7 +173,9 @@ class PressureBrush(BaseBrush):
         local_pressure = self._get_pressure_at_t(nearest_t, width)
         
         # 重新计算 alpha，考虑局部压力
-        alpha = torch.clamp((local_pressure / 2.0 - center_dist) / max(1.0, local_pressure / 2.0 * 0.1), 0.0, 1.0)
+        half_local = local_pressure / 2.0
+        aa_width = torch.clamp(half_local * 0.1, min=1.0)
+        alpha = torch.clamp((half_local - center_dist) / aa_width, 0.0, 1.0)
         
         # 应用透明度
         alpha = alpha * opacity * color[3]

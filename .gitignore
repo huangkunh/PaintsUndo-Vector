@@ -43,3 +43,5 @@ venv/
 
 # Logs
 *.log
+test_output/
+test_input.png

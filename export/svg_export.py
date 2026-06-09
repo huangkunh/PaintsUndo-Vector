@@ -332,54 +332,31 @@ class SVGExporter:
         ))
     
     def _add_filters(self, dwg: svgwrite.Drawing):
-        """添加 SVG 滤镜定义"""
+        """添加 SVG 滤镜定义（使用 xml.etree 兼容 svgwrite）"""
+        from xml.etree.ElementTree import SubElement
+        
+        # 获取 defs 的底层 XML 元素
         defs = dwg.defs
+        defs_xml = defs.get_xml()
         
         # 水彩扩散滤镜
-        watercolor_filter = defs.filter(
-            id="watercolor-filter",
-            size=("150%", "150%"),
-            x="-25%", y="-25%",
-        )
-        watercolor_filter.feGaussianBlur(
-            in_="SourceGraphic",
-            stdDeviation="2",
-            result="blur",
-        )
-        watercolor_filter.feComposite(
-            in_="blur",
-            in2="SourceGraphic",
-            operator="over",
-        )
-        defs.add(watercolor_filter)
+        wc_filter = SubElement(defs_xml, '{http://www.w3.org/2000/svg}filter',
+            id='watercolor-filter', x='-25%', y='-25%', width='150%', height='150%')
+        SubElement(wc_filter, '{http://www.w3.org/2000/svg}feGaussianBlur',
+            attrib={'in': 'SourceGraphic', 'stdDeviation': '2', 'result': 'blur'})
+        SubElement(wc_filter, '{http://www.w3.org/2000/svg}feComposite',
+            attrib={'in': 'blur', 'in2': 'SourceGraphic', 'operator': 'over'})
         
         # 铅笔纹理滤镜
-        pencil_filter = defs.filter(
-            id="pencil-filter",
-            size=("120%", "120%"),
-            x="-10%", y="-10%",
-        )
-        pencil_filter.feTurbulence(
-            type="fractalNoise",
-            baseFrequency="0.5",
-            numOctaves="4",
-            result="noise",
-        )
-        pencil_filter.feDisplacementMap(
-            in_="SourceGraphic",
-            in2="noise",
-            scale="1",
-        )
-        defs.add(pencil_filter)
+        pn_filter = SubElement(defs_xml, '{http://www.w3.org/2000/svg}filter',
+            id='pencil-filter', x='-10%', y='-10%', width='120%', height='120%')
+        SubElement(pn_filter, '{http://www.w3.org/2000/svg}feTurbulence',
+            attrib={'type': 'fractalNoise', 'baseFrequency': '0.5', 'numOctaves': '4', 'result': 'noise'})
+        SubElement(pn_filter, '{http://www.w3.org/2000/svg}feDisplacementMap',
+            attrib={'in': 'SourceGraphic', 'in2': 'noise', 'scale': '1'})
         
         # 喷笔柔和滤镜
-        airbrush_filter = defs.filter(
-            id="airbrush-filter",
-            size=("120%", "120%"),
-            x="-10%", y="-10%",
-        )
-        airbrush_filter.feGaussianBlur(
-            in_="SourceGraphic",
-            stdDeviation="3",
-        )
-        defs.add(airbrush_filter)
+        ab_filter = SubElement(defs_xml, '{http://www.w3.org/2000/svg}filter',
+            id='airbrush-filter', x='-10%', y='-10%', width='120%', height='120%')
+        SubElement(ab_filter, '{http://www.w3.org/2000/svg}feGaussianBlur',
+            attrib={'in': 'SourceGraphic', 'stdDeviation': '3'})

@@ -110,10 +110,10 @@ class WatercolorBrush(BaseBrush):
         # 将 alpha 转换为图像格式进行模糊
         alpha_img = base_alpha.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
         
-        # 创建高斯核
+        # 创建高斯核（纯 PyTorch 实现，兼容所有版本）
         kernel_size = int(self.spread_radius * 6) | 1  # 确保奇数
         sigma = self.spread_radius
-        blurred_alpha = F.gaussian_blur(alpha_img, kernel_size=[kernel_size, kernel_size], sigma=[sigma, sigma])
+        blurred_alpha = self._gaussian_blur(alpha_img, kernel_size, sigma)
         blurred_alpha = blurred_alpha.squeeze(0).squeeze(0)  # [H, W]
         
         # 混合基础 alpha 和模糊 alpha
@@ -136,6 +136,25 @@ class WatercolorBrush(BaseBrush):
         rendered[3] = alpha
         
         return rendered
+    
+    def _gaussian_blur(self, x: torch.Tensor, kernel_size: int, sigma: float) -> torch.Tensor:
+        """纯 PyTorch 高斯模糊（兼容所有版本）"""
+        channels = x.shape[1]
+        k = kernel_size
+        # 创建 1D 高斯核
+        t = torch.arange(k, device=x.device, dtype=torch.float32) - k // 2
+        gauss_1d = torch.exp(-t ** 2 / (2 * sigma ** 2))
+        gauss_1d = gauss_1d / gauss_1d.sum()
+        
+        # 分离卷积：先水平后垂直
+        pad = k // 2
+        # 水平
+        kh = gauss_1d.view(1, 1, 1, k).expand(channels, 1, 1, k)
+        out = F.conv2d(x, kh, padding=(0, pad), groups=channels)
+        # 垂直
+        kv = gauss_1d.view(1, 1, k, 1).expand(channels, 1, k, 1)
+        out = F.conv2d(out, kv, padding=(pad, 0), groups=channels)
+        return out
     
     def _sample_bezier_curve(self, control_points, num_samples=64):
         """采样贝塞尔曲线"""
