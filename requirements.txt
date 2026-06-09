@@ -4,11 +4,9 @@ torchvision>=0.10.0
 numpy>=1.20.0
 Pillow>=8.0.0
 
-# Loss functions
-lpips>=0.1.4
-
 # Visualization & Web UI
 gradio>=4.0.0
+matplotlib>=3.5.0
 
 # Export
 svgwrite>=1.4.1
@@ -16,3 +14,4 @@ svgwrite>=1.4.1
 # Utilities
 pyyaml>=5.4
 tqdm>=4.60.0
+scipy>=1.7.0

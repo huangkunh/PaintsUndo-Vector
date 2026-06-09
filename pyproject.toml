@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "paints-undo-vector"
-version = "0.1.0"
+version = "0.2.0"
 description = "Vector stroke generation via differentiable rendering optimization - PaintsUndo alternative that outputs clean vector brush strokes"
 readme = "README.md"
 license = {text = "MIT"}
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["differentiable-rendering", "vector-graphics", "stroke-generation", "painting-simulation", "diffvg"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
@@ -22,34 +22,32 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Multimedia :: Graphics",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 dependencies = [
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
-    "numpy>=1.24.0",
-    "Pillow>=9.5.0",
-    "opencv-python>=4.7.0",
-    "scipy>=1.10.0",
-    "lpips>=0.1.4",
-    "svgwrite>=1.4.3",
-    "tqdm>=4.65.0",
-    "pyyaml>=6.0",
-    "matplotlib>=3.7.0",
+    "torch>=1.9.0",
+    "torchvision>=0.10.0",
+    "numpy>=1.20.0",
+    "Pillow>=8.0.0",
+    "scipy>=1.7.0",
+    "svgwrite>=1.4.1",
+    "tqdm>=4.60.0",
+    "pyyaml>=5.4",
+    "matplotlib>=3.5.0",
 ]
 
 [project.optional-dependencies]
+webui = [
+    "gradio>=4.0.0",
+]
 dev = [
     "pytest>=7.0",
     "black>=23.0",
     "isort>=5.12",
     "flake8>=6.0",
-]
-demo = [
-    "gradio>=3.35.0",
-    "pygame>=2.3.0",
 ]
 
 [project.scripts]

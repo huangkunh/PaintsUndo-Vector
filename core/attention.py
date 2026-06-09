@@ -25,11 +25,8 @@ class AttentionMap:
     """
     注意力图计算器
     
-    计算多种注意力图，用于引导笔画放置：
-    - 残差注意力：|rendered - target| 的空间分布
-    - 边缘注意力：目标图像的边缘强度分布
-    - 显著性注意力：视觉显著性分布
-    - 颜色注意力：颜色差异的空间分布
+    计算多种注意力图，用于引导笔画放置。
+    所有计算均为纯 PyTorch 实现，无需 cv2 依赖。
     """
     
     def __init__(self, device: str = "cpu"):
@@ -43,24 +40,13 @@ class AttentionMap:
         """
         计算残差注意力图。
         
-        在当前渲染与目标差异最大的区域，
-        放置更多笔画以减少差异。
-        
-        Args:
-            rendered: [C, H, W] 当前渲染图像
-            target: [C, H, W] 目标图像
-            
-        Returns:
-            [H, W] 注意力图，值越大表示越需要笔画
+        在当前渲染与目标差异最大的区域，放置更多笔画。
         """
-        diff = (rendered - target).abs().mean(dim=0)  # [H, W]
-        
-        # 归一化到 [0, 1]
+        diff = (rendered - target).abs().mean(dim=0)
         if diff.max() > 0:
             attention = diff / diff.max()
         else:
             attention = diff
-        
         return attention
     
     def compute_edge_attention(
@@ -68,15 +54,11 @@ class AttentionMap:
         target: torch.Tensor,
     ) -> torch.Tensor:
         """
-        计算边缘注意力图。
+        计算边缘注意力图（纯 PyTorch Sobel 算子）。
         
-        在边缘区域放置更多笔画，
-        模拟画家在轮廓处更加仔细的绘画习惯。
-        
-        使用 Sobel 算子检测边缘。
+        在边缘区域放置更多笔画，模拟画家在轮廓处更加仔细的绘画习惯。
         """
-        # 转为灰度
-        gray = target.mean(dim=0, keepdim=True).unsqueeze(0)  # [1, 1, H, W]
+        gray = target.mean(dim=0, keepdim=True).unsqueeze(0)
         
         # Sobel 算子
         sobel_x = torch.tensor(
@@ -89,18 +71,15 @@ class AttentionMap:
             dtype=torch.float32, device=self.device
         ).view(1, 1, 3, 3)
         
-        edge_x = F.conv2d(gray, sobel_x, padding=1)
-        edge_y = F.conv2d(gray, sobel_y, padding=1)
+        grad_x = F.conv2d(gray, sobel_x, padding=1)
+        grad_y = F.conv2d(gray, sobel_y, padding=1)
         
-        edge = torch.sqrt(edge_x ** 2 + edge_y ** 2).squeeze()  # [H, W]
+        edge = (grad_x ** 2 + grad_y ** 2).sqrt().squeeze(0, 1)
         
-        # 归一化
         if edge.max() > 0:
-            attention = edge / edge.max()
-        else:
-            attention = edge
+            edge = edge / edge.max()
         
-        return attention
+        return edge
     
     def compute_saliency_attention(
         self,
@@ -109,31 +88,34 @@ class AttentionMap:
         """
         计算显著性注意力图。
         
-        使用简化的显著性检测：
-        基于颜色对比度和中心偏好。
+        使用中心-周围差异模型计算视觉显著性，
+        模拟人类视觉系统的注意力机制。
         """
-        C, H, W = target.shape
+        gray = target.mean(dim=0, keepdim=True).unsqueeze(0)
         
-        # 计算颜色对比度
-        mean_color = target.mean(dim=[1, 2], keepdim=True)
-        color_diff = (target - mean_color).abs().mean(dim=0)  # [H, W]
+        # 多尺度中心-周围差异
+        saliency = torch.zeros_like(gray.squeeze(0).squeeze(0))
         
-        # 中心偏好（高斯权重）
-        y_coords = torch.linspace(-1, 1, H, device=self.device)
-        x_coords = torch.linspace(-1, 1, W, device=self.device)
-        grid_y, grid_x = torch.meshgrid(y_coords, x_coords, indexing='ij')
-        center_weight = torch.exp(-(grid_x ** 2 + grid_y ** 2) / 0.5)
+        for sigma in [4, 8, 16]:
+            kernel_size = int(sigma * 6) | 1  # 确保奇数
+            kernel = _gaussian_kernel_1d(kernel_size, sigma, self.device)
+            
+            # 中心（细尺度）
+            center = _separable_conv2d(gray, kernel)
+            # 周围（粗尺度）
+            surround = _separable_conv2d(center, kernel)
+            
+            diff = (center - surround).abs().squeeze(0).squeeze(0)
+            if diff.max() > 0:
+                diff = diff / diff.max()
+            saliency += diff
         
-        # 组合
-        saliency = color_diff * center_weight
+        saliency = saliency / 3.0
         
-        # 归一化
         if saliency.max() > 0:
-            attention = saliency / saliency.max()
-        else:
-            attention = saliency
+            saliency = saliency / saliency.max()
         
-        return attention
+        return saliency
     
     def compute_color_attention(
         self,
@@ -144,99 +126,86 @@ class AttentionMap:
         计算颜色注意力图。
         
         在颜色差异最大的区域放置笔画。
-        使用 LAB 颜色空间的差异。
+        使用 LAB 颜色空间的感知差异。
         """
-        # 简化：使用 RGB 空间的加权差异
-        # 人类视觉对绿色更敏感
-        weights = torch.tensor([0.299, 0.587, 0.114], device=self.device).view(3, 1, 1)
-        diff = ((rendered - target) * weights).abs().sum(dim=0)  # [H, W]
+        # 简化的感知颜色差异（RGB 空间加权）
+        r_diff = (rendered[0] - target[0]).abs()
+        g_diff = (rendered[1] - target[1]).abs()
+        b_diff = (rendered[2] - target[2]).abs()
         
-        # 归一化
-        if diff.max() > 0:
-            attention = diff / diff.max()
-        else:
-            attention = diff
+        # 人眼对绿色更敏感
+        color_diff = 0.3 * r_diff + 0.59 * g_diff + 0.11 * b_diff
         
-        return attention
+        if color_diff.max() > 0:
+            color_diff = color_diff / color_diff.max()
+        
+        return color_diff
     
     def compute_combined_attention(
         self,
         rendered: torch.Tensor,
         target: torch.Tensor,
-        stage: int = 0,
+        residual_weight: float = 0.4,
+        edge_weight: float = 0.3,
+        saliency_weight: float = 0.1,
+        color_weight: float = 0.2,
     ) -> torch.Tensor:
         """
         计算组合注意力图。
         
-        根据不同阶段调整各注意力图的权重：
-        - 底色阶段：颜色注意力最重要
-        - 刻画阶段：残差注意力最重要
-        - 细节阶段：边缘注意力最重要
-        
-        Args:
-            rendered: [C, H, W] 当前渲染图像
-            target: [C, H, W] 目标图像
-            stage: 当前阶段索引
-            
-        Returns:
-            [H, W] 组合注意力图
+        将多种注意力图加权融合，得到最终的笔画放置引导图。
         """
         residual = self.compute_residual_attention(rendered, target)
         edge = self.compute_edge_attention(target)
         saliency = self.compute_saliency_attention(target)
         color = self.compute_color_attention(rendered, target)
         
-        if stage == 0:
-            # 底色阶段：颜色和显著性最重要
-            w_r, w_e, w_s, w_c = 0.2, 0.1, 0.3, 0.4
-        elif stage == 1:
-            # 刻画阶段：残差和边缘最重要
-            w_r, w_e, w_s, w_c = 0.4, 0.3, 0.1, 0.2
-        else:
-            # 细节阶段：边缘和残差最重要
-            w_r, w_e, w_s, w_c = 0.3, 0.4, 0.1, 0.2
+        # 统一尺寸
+        target_size = residual.shape
+        edge = F.interpolate(
+            edge.unsqueeze(0).unsqueeze(0), size=target_size, mode='bilinear', align_corners=False
+        ).squeeze(0).squeeze(0)
+        saliency = F.interpolate(
+            saliency.unsqueeze(0).unsqueeze(0), size=target_size, mode='bilinear', align_corners=False
+        ).squeeze(0).squeeze(0)
+        color = F.interpolate(
+            color.unsqueeze(0).unsqueeze(0), size=target_size, mode='bilinear', align_corners=False
+        ).squeeze(0).squeeze(0)
         
-        combined = w_r * residual + w_e * edge + w_s * saliency + w_c * color
+        combined = (
+            residual_weight * residual
+            + edge_weight * edge
+            + saliency_weight * saliency
+            + color_weight * color
+        )
         
-        # 归一化
         if combined.max() > 0:
             combined = combined / combined.max()
         
         return combined
     
-    def sample_stroke_position(
+    def sample_positions_from_attention(
         self,
         attention_map: torch.Tensor,
-        num_samples: int = 1,
+        num_samples: int = 10,
         temperature: float = 1.0,
     ) -> torch.Tensor:
         """
-        根据注意力图采样笔画位置。
+        从注意力图中采样笔画放置位置。
         
-        注意力值越高的区域被采样的概率越大，
-        但也保留一定的随机性（由 temperature 控制）。
-        
-        Args:
-            attention_map: [H, W] 注意力图
-            num_samples: 采样数量
-            temperature: 温度参数（越高越均匀，越低越集中在高注意力区域）
-            
-        Returns:
-            [num_samples, 2] 采样位置（归一化坐标 [0, 1]）
+        使用 softmax 温度控制采样分布的尖锐程度：
+        - temperature → 0: 趋向贪心采样（只选最大值）
+        - temperature → ∞: 趋向均匀采样
         """
         H, W = attention_map.shape
         
         # 展平并应用温度
-        flat_attention = attention_map.reshape(-1)
-        flat_attention = (flat_attention / max(temperature, 0.01)).exp()
-        
-        # 归一化为概率分布
-        probs = flat_attention / flat_attention.sum()
+        flat = attention_map.reshape(-1)
+        probs = F.softmax(flat / max(temperature, 0.01), dim=0)
         
         # 采样
         indices = torch.multinomial(probs, num_samples, replacement=True)
         
-        # 转换为坐标
         y_coords = indices // W
         x_coords = indices % W
         
@@ -246,50 +215,76 @@ class AttentionMap:
         ], dim=1)
         
         return positions
+
+
+def sample_from_attention_map(
+    attention_map: torch.Tensor,
+    num_samples: int = 10,
+    temperature: float = 1.0,
+) -> torch.Tensor:
+    """从注意力图采样位置的便捷函数"""
+    device = attention_map.device
+    am = AttentionMap(device=device)
+    return am.sample_positions_from_attention(attention_map, num_samples, temperature)
+
+
+def compute_local_gradient_direction(
+    target_image: torch.Tensor,
+    position: Tuple[float, float],
+) -> float:
+    """
+    根据目标图像的局部梯度方向确定笔画方向。
     
-    def sample_stroke_direction(
-        self,
-        position: torch.Tensor,
-        target: torch.Tensor,
-    ) -> float:
-        """
-        根据目标图像的局部梯度方向确定笔画方向。
-        
-        模拟画家沿边缘方向或垂直于边缘方向绘画的习惯。
-        
-        Args:
-            position: [2] 笔画位置（归一化坐标）
-            target: [C, H, W] 目标图像
-            
-        Returns:
-            笔画方向角度（弧度）
-        """
-        C, H, W = target.shape
-        
-        # 获取位置附近的梯度
-        px = int(position[0].item() * (W - 1))
-        py = int(position[1].item() * (H - 1))
-        
-        # 计算梯度
-        gray = target.mean(dim=0)
-        
-        # 有限差分
-        dx = torch.zeros_like(gray)
-        dy = torch.zeros_like(gray)
-        
-        if px > 0 and px < W - 1:
-            dx[:, 1:-1] = gray[:, 2:] - gray[:, :-2]
-        if py > 0 and py < H - 1:
-            dy[1:-1, :] = gray[2:, :] - gray[:-2, :]
-        
-        # 局部梯度方向
-        local_dx = dx[py, px].item() if 0 <= py < H and 0 <= px < W else 0
-        local_dy = dy[py, px].item() if 0 <= py < H and 0 <= px < W else 0
-        
-        # 笔画方向垂直于梯度方向（沿边缘方向）
-        angle = np.arctan2(-local_dx, local_dy)
-        
-        # 添加少量随机偏移
-        angle += np.random.randn() * 0.3
-        
-        return angle
+    模拟画家沿边缘方向或垂直于边缘方向绘画的习惯。
+    """
+    C, H, W = target_image.shape
+    px = int(position[0] * (W - 1))
+    py = int(position[1] * (H - 1))
+    
+    gray = target_image.mean(dim=0)
+    
+    dx = torch.zeros_like(gray)
+    dy = torch.zeros_like(gray)
+    
+    if W > 2:
+        dx[:, 1:-1] = gray[:, 2:] - gray[:, :-2]
+    if H > 2:
+        dy[1:-1, :] = gray[2:, :] - gray[:-2, :]
+    
+    local_dx = dx[py, px].item() if 0 <= py < H and 0 <= px < W else 0
+    local_dy = dy[py, px].item() if 0 <= py < H and 0 <= px < W else 0
+    
+    # 笔画方向垂直于梯度方向（沿边缘方向）
+    angle = np.arctan2(-local_dx, local_dy)
+    angle += np.random.randn() * 0.3
+    
+    return angle
+
+
+# ==================== 辅助函数 ====================
+
+def _gaussian_kernel_1d(size: int, sigma: float, device: str = "cpu") -> torch.Tensor:
+    """创建 1D 高斯卷积核"""
+    x = torch.arange(size, device=device, dtype=torch.float32) - size // 2
+    kernel = torch.exp(-x ** 2 / (2 * sigma ** 2))
+    kernel = kernel / kernel.sum()
+    return kernel
+
+
+def _separable_conv2d(x: torch.Tensor, kernel_1d: torch.Tensor) -> torch.Tensor:
+    """使用分离卷积进行 2D 高斯模糊"""
+    C = x.shape[1]
+    k = kernel_1d.shape[0]
+    
+    # 水平卷积核
+    kh = kernel_1d.view(1, 1, 1, k).expand(C, 1, 1, k)
+    # 垂直卷积核
+    kv = kernel_1d.view(1, 1, k, 1).expand(C, 1, k, 1)
+    
+    padding_h = k // 2
+    padding_v = k // 2
+    
+    out = F.conv2d(x, kh, padding=(0, padding_h), groups=C)
+    out = F.conv2d(out, kv, padding=(padding_v, 0), groups=C)
+    
+    return out

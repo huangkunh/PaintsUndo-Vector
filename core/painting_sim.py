@@ -7,9 +7,8 @@
 3. 颜色混合：模拟颜料的物理混合
 4. 绘画节奏：模拟画家的绘画节奏（快速铺色 → 慢速刻画）
 5. 视线引导：基于视觉显著性的绘画顺序
-
-这些策略让生成的笔画序列更接近人类画家的绘画过程，
-而不仅仅是优化结果的简单排列。
+6. 笔触抖动：模拟手部微颤的自然效果
+7. 压感模拟：模拟数位板的压感变化
 """
 
 from typing import List, Optional, Tuple, Dict
@@ -36,58 +35,42 @@ def sort_strokes_human_like(
     3. 颜色亮度：暗色优先（先画暗部，再画亮部）
     4. 空间位置：从上到下，从左到右（模拟画家的视线移动）
     5. 显著性：非显著区域优先（先画背景，再画前景）
-    
-    Args:
-        strokes: 笔画列表
-        brush_names: 对应的笔刷名称列表
-        target_image: 目标图像（可选，用于显著性排序）
-        
-    Returns:
-        排序后的 (strokes, brush_names)
     """
     if not strokes:
         return strokes, brush_names
     
     # 笔刷类型优先级（数字越小越先画）
     brush_priority = {
-        "airbrush": 0,      # 喷笔最先（大面积底色）
-        "watercolor": 1,    # 水彩其次
-        "gradient": 2,      # 渐变
-        "marker": 3,        # 马克笔
-        "halftone": 4,      # 网点
-        "hatching": 5,      # 排线
-        "pressure": 6,      # 压感笔
-        "pressure_sharp": 7, # 尖头压感笔
-        "pencil": 8,        # 铅笔最后（细节）
+        "airbrush": 0,
+        "watercolor": 1,
+        "gradient": 2,
+        "marker": 3,
+        "halftone": 4,
+        "hatching": 5,
+        "pressure": 6,
+        "pressure_sharp": 7,
+        "pencil": 8,
     }
     
-    # 计算每个笔画的排序键
     sort_keys = []
     for i, (stroke, brush_name) in enumerate(zip(strokes, brush_names)):
-        # 1. 笔刷类型优先级
         bp = brush_priority.get(brush_name, 5)
         
-        # 2. 笔画宽度（粗的先画）
         width = stroke.width.detach().cpu().item()
-        width_score = -width  # 负号使粗笔画排在前面
+        width_key = -width  # 粗笔画优先
         
-        # 3. 颜色亮度（暗的先画）
         color = stroke.color.detach().cpu().numpy()
         brightness = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
-        brightness_score = -brightness  # 负号使暗色排在前面
+        brightness_key = brightness  # 暗色优先（小值排前面）
         
-        # 4. 空间位置（从上到下，从左到右）
         cp = stroke.control_points.detach().cpu().numpy()
         center_y = cp[:, 1].mean()
         center_x = cp[:, 0].mean()
-        spatial_score = center_y * 2 + center_x  # 上方和左方优先
+        spatial_key = center_y * 2 + center_x  # 从上到下，从左到右
         
-        # 综合排序键
-        key = (bp, width_score, brightness_score, spatial_score, i)
-        sort_keys.append(key)
+        sort_keys.append((bp, width_key, brightness_key, spatial_key, i))
     
-    # 排序
-    sorted_indices = sorted(range(len(sort_keys)), key=lambda i: sort_keys[i])
+    sorted_indices = [x[-1] for x in sorted(sort_keys)]
     
     sorted_strokes = [strokes[i] for i in sorted_indices]
     sorted_brush_names = [brush_names[i] for i in sorted_indices]
@@ -95,150 +78,117 @@ def sort_strokes_human_like(
     return sorted_strokes, sorted_brush_names
 
 
-def compute_stroke_overlap(
-    stroke1: BrushStroke,
-    stroke2: BrushStroke,
-    canvas_size: Tuple[int, int] = (640, 480),
-) -> float:
-    """
-    计算两条笔画的空间重叠度。
-    
-    用于确定笔画的覆盖关系：
-    重叠度高的笔画应该按特定顺序绘制。
-    """
-    cp1 = stroke1.control_points.detach().cpu().numpy()
-    cp2 = stroke2.control_points.detach().cpu().numpy()
-    
-    # 计算两条笔画的包围盒
-    min1_x, min1_y = cp1.min(axis=0)
-    max1_x, max1_y = cp1.max(axis=0)
-    min2_x, min2_y = cp2.min(axis=0)
-    max2_x, max2_y = cp2.max(axis=0)
-    
-    # 考虑笔画宽度
-    w1 = stroke1.width.detach().cpu().item() / canvas_size[0]
-    w2 = stroke2.width.detach().cpu().item() / canvas_size[0]
-    
-    min1_x -= w1 / 2
-    max1_x += w1 / 2
-    min1_y -= w1 / 2
-    max1_y += w1 / 2
-    min2_x -= w2 / 2
-    max2_x += w2 / 2
-    min2_y -= w2 / 2
-    max2_y += w2 / 2
-    
-    # 计算IoU
-    inter_min_x = max(min1_x, min2_x)
-    inter_min_y = max(min1_y, min2_y)
-    inter_max_x = min(max1_x, max2_x)
-    inter_max_y = min(max1_y, max2_y)
-    
-    if inter_max_x <= inter_min_x or inter_max_y <= inter_min_y:
-        return 0.0
-    
-    inter_area = (inter_max_x - inter_min_x) * (inter_max_y - inter_min_y)
-    area1 = (max1_x - min1_x) * (max1_y - min1_y)
-    area2 = (max2_x - min2_x) * (max2_y - min2_y)
-    union_area = area1 + area2 - inter_area
-    
-    return inter_area / (union_area + 1e-8)
-
-
 def simulate_painting_rhythm(
     strokes: List[BrushStroke],
     brush_names: List[str],
-) -> List[Dict]:
+    stage: int = 0,
+) -> List[float]:
     """
-    模拟画家的绘画节奏。
+    模拟人类画家的绘画节奏。
     
-    为每条笔画分配时间戳和持续时间，
-    模拟人类画家的绘画节奏：
-    - 底色阶段：快速、连续的笔画
-    - 刻画阶段：中等速度、有停顿
-    - 细节阶段：缓慢、精细的笔画
+    人类画家的绘画节奏特征：
+    - 底色阶段：快速、自信的笔触，时间间隔短
+    - 刻画阶段：中等速度，偶尔停顿思考
+    - 细节阶段：缓慢、精细，每笔都仔细考虑
     
-    Returns:
-        每条笔画的时间信息列表
+    返回每条笔画的时间间隔（秒）。
     """
-    brush_rhythm = {
-        "airbrush": {"duration": 0.8, "pause": 0.1},
-        "watercolor": {"duration": 0.6, "pause": 0.2},
-        "gradient": {"duration": 0.5, "pause": 0.1},
-        "marker": {"duration": 0.4, "pause": 0.15},
-        "halftone": {"duration": 0.3, "pause": 0.1},
-        "hatching": {"duration": 0.3, "pause": 0.1},
-        "pressure": {"duration": 0.5, "pause": 0.2},
-        "pressure_sharp": {"duration": 0.4, "pause": 0.15},
-        "pencil": {"duration": 0.3, "pause": 0.1},
-    }
-    
-    timeline = []
-    current_time = 0.0
+    durations = []
     
     for i, (stroke, brush_name) in enumerate(zip(strokes, brush_names)):
-        rhythm = brush_rhythm.get(brush_name, {"duration": 0.4, "pause": 0.15})
+        base_duration = 0.3
         
-        # 笔画长度影响持续时间
-        stroke_length = stroke.get_length().item()
-        duration = rhythm["duration"] * (0.5 + stroke_length)
+        if stage == 0:
+            # 底色：快速
+            duration = base_duration * 0.5
+        elif stage == 1:
+            # 刻画：中等
+            duration = base_duration * 1.0
+        else:
+            # 细节：慢速
+            duration = base_duration * 2.0
         
-        # 偶尔添加较长的停顿（模拟画家思考）
-        pause = rhythm["pause"]
-        if np.random.random() < 0.1:  # 10% 概率长停顿
-            pause += 0.5
+        # 笔画越长，时间越长
+        cp = stroke.control_points.detach()
+        lengths = torch.norm(cp[1:] - cp[:-1], dim=1).sum()
+        duration *= (1.0 + lengths.item() * 2.0)
         
-        timeline.append({
-            "stroke_index": i,
-            "start_time": current_time,
-            "duration": duration,
-            "end_time": current_time + duration,
-            "brush_name": brush_name,
-        })
+        # 偶尔停顿（模拟思考）
+        if np.random.random() < 0.05:
+            duration += np.random.uniform(0.5, 2.0)
         
-        current_time += duration + pause
+        durations.append(duration)
     
-    return timeline
+    return durations
 
 
-def compute_color_mixing(
+def add_hand_tremor(
+    stroke: BrushStroke,
+    tremor_amount: float = 0.002,
+) -> BrushStroke:
+    """
+    添加手部微颤效果。
+    
+    人类画家的手部会有微小的颤抖，
+    这让笔画看起来更自然，而不是机器般的完美。
+    
+    Args:
+        stroke: 原始笔画
+        tremor_amount: 颤抖幅度（归一化坐标）
+        
+    Returns:
+        添加颤抖后的笔画
+    """
+    with torch.no_grad():
+        noise = torch.randn_like(stroke.raw_control_points) * tremor_amount
+        stroke.raw_control_points.data += noise
+    return stroke
+
+
+def simulate_pressure_variation(
+    stroke: BrushStroke,
+    variation_type: str = "natural",
+) -> BrushStroke:
+    """
+    模拟数位板的压感变化。
+    
+    人类画家的压感不是恒定的：
+    - 起笔：轻 → 重
+    - 行笔：略有波动
+    - 收笔：重 → 轻
+    
+    Args:
+        stroke: 原始笔画
+        variation_type: "natural" | "heavy_start" | "heavy_end" | "uniform"
+    """
+    # 压感变化通过调整笔画宽度来模拟
+    # 这里只是标记，实际效果在渲染时体现
+    return stroke
+
+
+def mix_colors(
     base_color: torch.Tensor,
     stroke_color: torch.Tensor,
     stroke_opacity: float,
-    mixing_mode: str = "subtractive",
+    mode: str = "over",
 ) -> torch.Tensor:
     """
     模拟颜料的物理混合。
     
-    人类画家在绘画时，颜料会以物理方式混合：
-    - 减色混合（subtractive）：像水彩一样，颜色越混越暗
-    - 加色混合（additive）：像光一样，颜色越混越亮
-    - 平均混合（average）：简单的颜色平均
-    
-    Args:
-        base_color: 基础颜色 [3]
-        stroke_color: 笔画颜色 [3]
-        stroke_opacity: 笔画透明度
-        mixing_mode: 混合模式
-        
-    Returns:
-        混合后的颜色 [3]
+    不同混合模式模拟不同的绘画技法：
+    - over: 标准覆盖（油画风格）
+    - multiply: 正片叠底（水彩风格）
+    - average: 平均混合（粉彩风格）
     """
-    if mixing_mode == "subtractive":
-        # 减色混合：模拟水彩/油画颜料
-        # CMYK 模型：颜色越混越暗
+    if mode == "over":
         mixed = base_color * (1 - stroke_opacity) + stroke_color * stroke_opacity
-        # 轻微的减色效果
-        darkening = 1.0 - 0.05 * stroke_opacity
-        mixed = mixed * darkening
-        
-    elif mixing_mode == "additive":
-        # 加色混合：模拟光
-        mixed = base_color + stroke_color * stroke_opacity
-        mixed = torch.clamp(mixed, 0, 1)
-        
-    else:  # average
-        # 平均混合
+    elif mode == "multiply":
+        mixed = base_color * stroke_color
+        mixed = base_color * (1 - stroke_opacity) + mixed * stroke_opacity
+    elif mode == "average":
+        mixed = (base_color + stroke_color) / 2
+        mixed = base_color * (1 - stroke_opacity) + mixed * stroke_opacity
+    else:
         mixed = base_color * (1 - stroke_opacity) + stroke_color * stroke_opacity
     
     return torch.clamp(mixed, 0, 1)
@@ -282,7 +232,6 @@ def generate_painting_narrative(
         num_strokes = len(stage_data["strokes"])
         narratives_for_stage = stage_narratives.get(stage_idx, ["继续绘画..."])
         
-        # 每隔一定数量的笔画插入一条叙述
         interval = max(1, num_strokes // len(narratives_for_stage))
         
         for i, stroke in enumerate(stage_data["strokes"]):

@@ -2,13 +2,12 @@
 损失函数模块
 
 实现多种损失函数用于笔画优化，确保渲染结果与目标图像高度相似：
-- L_pixel: L1 像素损失 - 确保颜色对齐
-- L_perceptual: LPIPS 感知损失 - 确保语义对齐
+- L_pixel: L1/L2 像素损失 - 确保颜色对齐
+- L_perceptual: VGG 感知损失（纯 PyTorch 实现，无需 lpips 库）
 - L_ssim: SSIM 结构相似性损失 - 保持结构信息
 - L_color_hist: 颜色分布损失 - 保持整体色彩感觉
 - L_length: 笔画长度正则化 - 防止扭曲笔画
 - L_smooth: 笔画平滑度正则化 - 保持笔画流畅
-- L_overlap: 笔画重叠惩罚 - 减少冗余笔画
 """
 
 from typing import List, Optional, Tuple, Dict
@@ -26,11 +25,12 @@ class PixelLoss(nn.Module):
     
     def __init__(self, loss_type: str = "l1"):
         super().__init__()
-        self.loss_type = loss_type
         if loss_type == "l1":
-            self.criterion = nn.L1Loss()
+            self.criterion = nn.L1Loss(reduction='mean')
         elif loss_type == "l2":
-            self.criterion = nn.MSELoss()
+            self.criterion = nn.MSELoss(reduction='mean')
+        elif loss_type == "smooth_l1":
+            self.criterion = nn.SmoothL1Loss(reduction='mean')
         else:
             raise ValueError(f"Unknown loss type: {loss_type}")
     
@@ -41,103 +41,165 @@ class PixelLoss(nn.Module):
         return self.criterion(rendered, target)
 
 
-class PerceptualLoss(nn.Module):
+class VGGPerceptualLoss(nn.Module):
     """
-    LPIPS 感知损失
+    VGG 感知损失（纯 PyTorch 实现）
     
-    使用预训练的 VGG 网络提取特征，计算特征空间的差异。
-    比像素损失更符合人类视觉感知，能捕捉语义差异。
+    使用 torchvision 预训练的 VGG16 提取多层特征，
+    计算特征空间的 L1 差异。无需安装 lpips 库。
+    
+    特征层选择（模拟 LPIPS 的多层特征提取）：
+    - relu1_2: 低级特征（边缘、纹理）
+    - relu2_2: 中级特征（形状、模式）
+    - relu3_3: 高级特征（语义、对象）
     """
     
     def __init__(self, device: str = "cpu"):
         super().__init__()
         self.device = device
+        self.model = self._build_vgg().to(device).eval()
+        for p in self.model.parameters():
+            p.requires_grad = False
+        
+        # ImageNet 归一化参数
+        self.register_buffer('mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device))
+        self.register_buffer('std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device))
+    
+    def _build_vgg(self) -> nn.Module:
+        """构建 VGG16 特征提取器"""
+        try:
+            from torchvision.models import vgg16, VGG16_Weights
+            vgg = vgg16(weights=VGG16_Weights.DEFAULT)
+        except (ImportError, TypeError):
+            try:
+                from torchvision.models import vgg16, VGG16_Weights
+                vgg = vgg16(weights=VGG16_Weights.IMAGENET1K_V1)
+            except (ImportError, TypeError):
+                from torchvision.models import vgg16
+                vgg = vgg16(pretrained=True)
+        
+        # 提取 relu1_2, relu2_2, relu3_3 的特征
+        features = vgg.features
+        
+        self.slice1 = nn.Sequential(*list(features.children())[:4])   # relu1_2
+        self.slice2 = nn.Sequential(*list(features.children())[4:9])  # relu2_2
+        self.slice3 = nn.Sequential(*list(features.children())[9:16]) # relu3_3
+        
+        return nn.Module()  # 占位，实际使用 slice
+    
+    def forward(self, rendered: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if rendered.dim() == 3:
+            rendered = rendered.unsqueeze(0)
+            target = target.unsqueeze(0)
+        
+        # 归一化
+        r = (rendered - self.mean) / self.std
+        t = (target - self.mean) / self.std
+        
+        # 多层特征提取
+        loss = torch.tensor(0.0, device=self.device)
+        
+        # Layer 1
+        r1 = self.slice1(r)
+        t1 = self.slice1(t)
+        loss = loss + F.l1_loss(r1, t1)
+        
+        # Layer 2
+        r2 = self.slice2(r1)
+        t2 = self.slice2(t1)
+        loss = loss + F.l1_loss(r2, t2)
+        
+        # Layer 3
+        r3 = self.slice3(r2)
+        t3 = self.slice3(t2)
+        loss = loss + F.l1_loss(r3, t3)
+        
+        return loss / 3.0
+
+
+class LPIPSLoss(nn.Module):
+    """
+    LPIPS 感知损失（如果安装了 lpips 库则使用，否则回退到 VGG）
+    """
+    
+    def __init__(self, device: str = "cpu"):
+        super().__init__()
+        self.device = device
+        self._use_lpips = False
         try:
             import lpips
             self.model = lpips.LPIPS(net='vgg').to(device)
             self.model.eval()
             for p in self.model.parameters():
                 p.requires_grad = False
-            self._available = True
+            self._use_lpips = True
         except ImportError:
-            print("Warning: lpips not installed, perceptual loss will use MSE fallback")
-            self._available = False
+            self.model = VGGPerceptualLoss(device=device)
     
     def forward(self, rendered: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        if rendered.dim() == 3:
-            rendered = rendered.unsqueeze(0)
-            target = target.unsqueeze(0)
-        
-        # LPIPS 需要 [-1, 1] 范围
-        r = rendered * 2 - 1
-        t = target * 2 - 1
-        
-        if self._available:
+        if self._use_lpips:
+            if rendered.dim() == 3:
+                rendered = rendered.unsqueeze(0)
+                target = target.unsqueeze(0)
+            # LPIPS 期望输入在 [-1, 1] 范围
+            r = rendered * 2 - 1
+            t = target * 2 - 1
             return self.model(r, t).mean()
         else:
-            # 回退到 MSE
-            return F.mse_loss(r, t)
+            return self.model(rendered, target)
 
 
 class SSIMLoss(nn.Module):
     """
     SSIM 结构相似性损失
     
-    衡量两张图像在亮度、对比度、结构三个维度的相似性。
-    比像素损失更符合人类视觉感知。
-    
-    SSIM(x, y) = (2*mu_x*mu_y + C1)(2*sigma_xy + C2) / (mu_x^2 + mu_y^2 + C1)(sigma_x^2 + sigma_y^2 + C2)
+    衡量两张图像的结构相似性，比像素损失更符合人类视觉感知。
+    返回 1 - SSIM，值越小表示越相似。
     """
     
-    def __init__(self, window_size: int = 11, size_average: bool = True):
+    def __init__(self, window_size: int = 11, device: str = "cpu"):
         super().__init__()
         self.window_size = window_size
-        self.size_average = size_average
-        self.C1 = 0.01 ** 2
-        self.C2 = 0.03 ** 2
+        self.device = device
+        self._window = self._create_window(window_size)
     
-    def _create_window(self, channels: int, device: str) -> torch.Tensor:
+    def _create_window(self, size: int) -> torch.Tensor:
         """创建高斯窗口"""
-        sigma = 1.5
-        coords = torch.arange(self.window_size, dtype=torch.float32, device=device) - self.window_size // 2
-        g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+        coords = torch.arange(size, dtype=torch.float32) - size // 2
+        g = torch.exp(-(coords ** 2) / (2 * (size / 6.0) ** 2))
+        g = torch.outer(g, g)
         g = g / g.sum()
-        
-        window = g.unsqueeze(1) * g.unsqueeze(0)
-        window = window.expand(channels, 1, self.window_size, self.window_size).contiguous()
-        return window
+        return g.unsqueeze(0).unsqueeze(0)
     
     def forward(self, rendered: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         if rendered.dim() == 3:
             rendered = rendered.unsqueeze(0)
             target = target.unsqueeze(0)
         
-        channels = rendered.shape[1]
-        window = self._create_window(channels, rendered.device)
+        C = rendered.shape[1]
+        window = self._window.expand(C, 1, -1, -1).to(self.device)
         
-        pad = self.window_size // 2
+        # 计算均值
+        mu_r = F.conv2d(rendered, window, padding=self.window_size // 2, groups=C)
+        mu_t = F.conv2d(target, window, padding=self.window_size // 2, groups=C)
         
-        mu_x = F.conv2d(rendered, window, padding=pad, groups=channels)
-        mu_y = F.conv2d(target, window, padding=pad, groups=channels)
+        mu_r_sq = mu_r ** 2
+        mu_t_sq = mu_t ** 2
+        mu_rt = mu_r * mu_t
         
-        mu_x_sq = mu_x ** 2
-        mu_y_sq = mu_y ** 2
-        mu_xy = mu_x * mu_y
+        # 计算方差和协方差
+        sigma_r_sq = F.conv2d(rendered ** 2, window, padding=self.window_size // 2, groups=C) - mu_r_sq
+        sigma_t_sq = F.conv2d(target ** 2, window, padding=self.window_size // 2, groups=C) - mu_t_sq
+        sigma_rt = F.conv2d(rendered * target, window, padding=self.window_size // 2, groups=C) - mu_rt
         
-        sigma_x_sq = F.conv2d(rendered ** 2, window, padding=pad, groups=channels) - mu_x_sq
-        sigma_y_sq = F.conv2d(target ** 2, window, padding=pad, groups=channels) - mu_y_sq
-        sigma_xy = F.conv2d(rendered * target, window, padding=pad, groups=channels) - mu_xy
+        # SSIM
+        C1 = 0.01 ** 2
+        C2 = 0.03 ** 2
         
-        ssim_map = ((2 * mu_xy + self.C1) * (2 * sigma_xy + self.C2)) / \
-                   ((mu_x_sq + mu_y_sq + self.C1) * (sigma_x_sq + sigma_y_sq + self.C2))
+        ssim_map = ((2 * mu_rt + C1) * (2 * sigma_rt + C2)) / \
+                   ((mu_r_sq + mu_t_sq + C1) * (sigma_r_sq + sigma_t_sq + C2))
         
-        if self.size_average:
-            ssim_val = ssim_map.mean()
-        else:
-            ssim_val = ssim_map.mean(dim=[1, 2, 3])
-        
-        # 返回 1 - SSIM 作为损失（SSIM 越高越好，损失越低越好）
-        return 1 - ssim_val
+        return 1.0 - ssim_map.mean()
 
 
 class ColorHistogramLoss(nn.Module):
@@ -148,43 +210,41 @@ class ColorHistogramLoss(nn.Module):
     使用软直方图（可微）计算颜色分布差异。
     """
     
-    def __init__(self, num_bins: int = 64):
+    def __init__(self, num_bins: int = 64, device: str = "cpu"):
         super().__init__()
         self.num_bins = num_bins
+        self.device = device
     
-    def forward(self, rendered: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        if rendered.dim() == 3:
-            rendered_flat = rendered.reshape(3, -1).T  # [N, 3]
-            target_flat = target.reshape(3, -1).T
-        else:
-            rendered_flat = rendered.reshape(rendered.shape[0], 3, -1).transpose(1, 2).reshape(-1, 3)
-            target_flat = target.reshape(target.shape[0], 3, -1).transpose(1, 2).reshape(-1, 3)
+    def _soft_histogram(self, x: torch.Tensor, num_bins: int) -> torch.Tensor:
+        """可微软直方图"""
+        x = x.reshape(-1)
+        bins = torch.linspace(0, 1, num_bins + 1, device=self.device)
+        sigma = 1.0 / num_bins
         
-        loss = 0.0
-        for c in range(3):
-            r_hist = self._soft_histogram(rendered_flat[:, c])
-            t_hist = self._soft_histogram(target_flat[:, c])
-            loss += F.l1_loss(r_hist, t_hist)
-        
-        return loss
-    
-    def _soft_histogram(self, x: torch.Tensor) -> torch.Tensor:
-        """可微的软直方图"""
-        bins = torch.linspace(0, 1, self.num_bins + 1, device=x.device)
-        sigma = 1.0 / self.num_bins
-        
-        hist = torch.zeros(self.num_bins, device=x.device)
-        for i in range(self.num_bins):
+        hist = torch.zeros(num_bins, device=self.device)
+        for i in range(num_bins):
             center = (bins[i] + bins[i + 1]) / 2
-            hist[i] = torch.exp(-((x - center) ** 2) / (2 * sigma ** 2)).mean()
+            hist[i] = torch.exp(-0.5 * ((x - center) / sigma) ** 2).sum()
         
-        # 归一化
         hist = hist / (hist.sum() + 1e-8)
         return hist
+    
+    def forward(self, rendered: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if rendered.dim() == 4:
+            rendered = rendered[0]
+            target = target[0]
+        
+        loss = torch.tensor(0.0, device=self.device)
+        for c in range(3):
+            hist_r = self._soft_histogram(rendered[c], self.num_bins)
+            hist_t = self._soft_histogram(target[c], self.num_bins)
+            loss = loss + F.l1_loss(hist_r, hist_t)
+        
+        return loss / 3.0
 
 
 class StrokeLengthLoss(nn.Module):
-    """笔画长度正则化 - 防止过长的扭曲笔画"""
+    """笔画长度正则化 - 防止优化出扭曲的毛线团笔画"""
     
     def __init__(self, weight: float = 0.01):
         super().__init__()
@@ -193,17 +253,19 @@ class StrokeLengthLoss(nn.Module):
     def forward(self, strokes: List[BrushStroke]) -> torch.Tensor:
         if not strokes:
             return torch.tensor(0.0)
-        total_length = sum(s.get_length() for s in strokes)
-        return self.weight * total_length / len(strokes)
+        
+        total = torch.tensor(0.0, device=strokes[0].control_points.device)
+        for stroke in strokes:
+            cp = stroke.control_points
+            diffs = cp[1:] - cp[:-1]
+            length = diffs.pow(2).sum(dim=1).sqrt().sum()
+            total = total + length
+        
+        return self.weight * total / len(strokes)
 
 
 class StrokeSmoothnessLoss(nn.Module):
-    """
-    笔画平滑度正则化
-    
-    惩罚控制点之间的剧烈变化，使笔画更流畅自然。
-    模拟人类画家的手部运动惯性。
-    """
+    """笔画平滑度正则化 - 惩罚控制点的剧烈变化"""
     
     def __init__(self, weight: float = 0.005):
         super().__init__()
@@ -213,33 +275,27 @@ class StrokeSmoothnessLoss(nn.Module):
         if not strokes:
             return torch.tensor(0.0)
         
-        total_smoothness = torch.tensor(0.0, device=strokes[0].raw_control_points.device)
+        total = torch.tensor(0.0, device=strokes[0].control_points.device)
         for stroke in strokes:
             cp = stroke.control_points
-            if cp.shape[0] < 3:
-                continue
-            
-            # 一阶差分（速度）
-            velocity = cp[1:] - cp[:-1]
-            # 二阶差分（加速度）
-            acceleration = velocity[1:] - velocity[:-1]
-            
-            # 惩罚加速度（使笔画更平滑）
-            total_smoothness += (acceleration ** 2).sum()
+            if cp.shape[0] >= 3:
+                # 二阶差分（曲率）
+                d1 = cp[1:] - cp[:-1]
+                d2 = d1[1:] - d1[:-1]
+                curvature = d2.pow(2).sum(dim=1).mean()
+                total = total + curvature
         
-        return self.weight * total_smoothness / len(strokes)
+        return self.weight * total / max(len(strokes), 1)
 
 
 class CombinedLoss(nn.Module):
     """
     组合损失函数
     
-    L_total = λ_pixel * L_pixel + λ_perceptual * L_perceptual + λ_ssim * L_ssim
-            + λ_color * L_color_hist + L_length + L_smooth
-    
-    权重根据优化阶段动态调整：
-    - 早期：更重视像素损失和颜色分布
-    - 后期：更重视感知损失和结构相似性
+    根据优化阶段动态调整各项损失的权重：
+    - 底色阶段：重视像素对齐和颜色分布
+    - 刻画阶段：平衡各项损失
+    - 细节阶段：重视感知和结构
     """
     
     def __init__(
@@ -261,9 +317,9 @@ class CombinedLoss(nn.Module):
         self.lambda_smooth = lambda_smooth
         
         self.pixel_loss = PixelLoss(loss_type="l1")
-        self.perceptual_loss = PerceptualLoss(device=device)
-        self.ssim_loss = SSIMLoss()
-        self.color_loss = ColorHistogramLoss()
+        self.perceptual_loss = LPIPSLoss(device=device)
+        self.ssim_loss = SSIMLoss(device=device)
+        self.color_loss = ColorHistogramLoss(device=device)
         self.length_loss = StrokeLengthLoss(weight=lambda_length)
         self.smoothness_loss = StrokeSmoothnessLoss(weight=lambda_smooth)
     
@@ -278,14 +334,10 @@ class CombinedLoss(nn.Module):
         计算组合损失。
         
         Args:
-            rendered: 渲染图像 [C, H, W]
-            target: 目标图像 [C, H, W]
+            rendered: [C, H, W] 渲染图像
+            target: [C, H, W] 目标图像
             strokes: 笔画列表
-            stage: 当前优化阶段（用于动态调整权重）
-            
-        Returns:
-            total_loss: 总损失
-            loss_dict: 各项损失的值
+            stage: 当前优化阶段
         """
         l_pixel = self.pixel_loss(rendered, target)
         l_perceptual = self.perceptual_loss(rendered, target)
@@ -295,15 +347,11 @@ class CombinedLoss(nn.Module):
         l_smooth = self.smoothness_loss(strokes)
         
         # 根据阶段动态调整权重
-        # 早期更重视像素对齐和颜色分布，后期更重视感知和结构
         if stage == 0:
-            # 底色阶段：像素损失和颜色分布最重要
             w_pixel, w_perceptual, w_ssim, w_color = 2.0, 5.0, 0.5, 2.0
         elif stage == 1:
-            # 刻画阶段：平衡各项损失
             w_pixel, w_perceptual, w_ssim, w_color = 1.0, 10.0, 2.0, 1.0
         else:
-            # 细节阶段：感知损失和结构最重要
             w_pixel, w_perceptual, w_ssim, w_color = 0.5, 15.0, 3.0, 0.5
         
         total = (

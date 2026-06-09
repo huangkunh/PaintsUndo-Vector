@@ -1,5 +1,5 @@
 """
-笔画初始化策略 - 基于图像分析的智能初始化
+笔画初始化策略 - 基于图像分析的智能初始化（纯 PyTorch 实现）
 
 根据目标图像的特征，智能初始化笔画参数。
 不同阶段使用不同的初始化策略：
@@ -8,10 +8,11 @@
 - 细节阶段：基于高频信息和高梯度区域的精细笔画
 
 关键改进：
-1. 颜色聚类初始化：从目标图像提取主色调，按颜色区域放置笔画
-2. 边缘引导初始化：沿边缘方向放置笔画，模拟画家的轮廓勾勒
-3. 显著性引导：在视觉显著区域放置更多笔画
-4. 渐进式细化：每个阶段在前一阶段的残差上初始化
+1. 纯 PyTorch 实现，无需 cv2 依赖
+2. 颜色聚类初始化：从目标图像提取主色调，按颜色区域放置笔画
+3. 边缘引导初始化：沿边缘方向放置笔画，模拟画家的轮廓勾勒
+4. 显著性引导：在视觉显著区域放置更多笔画
+5. 渐进式细化：每个阶段在前一阶段的残差上初始化
 """
 
 from typing import List, Optional, Tuple
@@ -34,314 +35,349 @@ def image_to_tensor(image_path: str, size: Tuple[int, int], device: str = "cpu")
     return tensor
 
 
+def pil_to_tensor(image, size: Tuple[int, int], device: str = "cpu") -> torch.Tensor:
+    """将 PIL Image 转换为张量"""
+    from PIL import Image
+    if not isinstance(image, Image.Image):
+        image = Image.fromarray(image)
+    image = image.convert("RGB")
+    image = image.resize((size[0], size[1]), Image.LANCZOS)
+    arr = np.array(image).astype(np.float32) / 255.0
+    return torch.from_numpy(arr).permute(2, 0, 1).to(device)
+
+
 def extract_color_palette(
     image: torch.Tensor,
     num_colors: int = 8,
 ) -> torch.Tensor:
     """
-    从图像中提取主要颜色（K-Means 聚类）。
+    从图像中提取主要颜色（纯 PyTorch K-Means 聚类）。
     
     模拟画家调色板：提取图像的主要色调，
     用于初始化底色阶段的笔画颜色。
     """
-    import cv2
+    C, H, W = image.shape
+    pixels = image.permute(1, 2, 0).reshape(-1, 3)  # [H*W, 3]
     
-    img_np = image.permute(1, 2, 0).cpu().numpy()
-    pixels = img_np.reshape(-1, 3).astype(np.float32)
+    # 如果像素太多，随机采样
+    if pixels.shape[0] > 10000:
+        indices = torch.randperm(pixels.shape[0])[:10000]
+        pixels = pixels[indices]
     
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
-    _, labels, centers = cv2.kmeans(
-        pixels, num_colors, None, criteria, 10, cv2.KMEANS_PP_CENTERS
-    )
+    # 简单的 K-Means 实现
+    device = image.device
     
-    centers = torch.from_numpy(centers).to(image.device)
+    # 随机初始化聚类中心
+    perm = torch.randperm(pixels.shape[0])[:num_colors]
+    centers = pixels[perm].clone()
     
-    # 按颜色区域大小排序（大区域优先）
-    label_counts = np.bincount(labels.flatten())
-    sorted_indices = np.argsort(-label_counts)
+    for _ in range(20):  # 20 次 K-Means 迭代
+        # 分配每个像素到最近的中心
+        dists = torch.cdist(pixels, centers)  # [N, K]
+        labels = dists.argmin(dim=1)  # [N]
+        
+        # 更新中心
+        for k in range(num_colors):
+            mask = labels == k
+            if mask.sum() > 0:
+                centers[k] = pixels[mask].mean(dim=0)
+    
+    # 按颜色区域大小排序
+    label_counts = torch.bincount(labels, minlength=num_colors)
+    sorted_indices = label_counts.argsort(descending=True)
     centers = centers[sorted_indices]
     
     return centers
 
 
-def extract_edges(
+def extract_edges_torch(
     image: torch.Tensor,
-    low_threshold: int = 50,
-    high_threshold: int = 150,
+    threshold: float = 0.1,
 ) -> torch.Tensor:
     """
-    Canny 边缘检测。
+    使用 Sobel 算子提取边缘（纯 PyTorch 实现）。
     
-    用于刻画阶段：沿边缘方向放置笔画，
-    模拟画家的轮廓勾勒过程。
+    Args:
+        image: [C, H, W] 图像张量
+        threshold: 边缘强度阈值
+        
+    Returns:
+        [H, W] 边缘强度图
     """
-    import cv2
+    gray = image.mean(dim=0, keepdim=True).unsqueeze(0)  # [1, 1, H, W]
     
-    img_np = (image.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-    edges = cv2.Canny(gray, low_threshold, high_threshold)
+    # Sobel 算子
+    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
+                           dtype=torch.float32, device=image.device).view(1, 1, 3, 3)
+    sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
+                           dtype=torch.float32, device=image.device).view(1, 1, 3, 3)
     
-    return torch.from_numpy(edges.astype(np.float32) / 255.0).to(image.device)
+    gx = F.conv2d(gray, sobel_x, padding=1)
+    gy = F.conv2d(gray, sobel_y, padding=1)
+    
+    edges = torch.sqrt(gx ** 2 + gy ** 2 + 1e-8).squeeze()
+    
+    # 归一化
+    if edges.max() > 0:
+        edges = edges / edges.max()
+    
+    return edges
 
 
 def extract_saliency(
     image: torch.Tensor,
 ) -> torch.Tensor:
     """
-    简单的显著性检测（基于频谱残差）。
+    简单的显著性检测（纯 PyTorch 实现）。
     
-    在视觉显著区域放置更多笔画，
-    模拟画家对重要区域的精细刻画。
+    基于颜色对比度的显著性：与平均颜色差异越大的区域越显著。
     """
-    import cv2
+    C, H, W = image.shape
     
-    img_np = (image.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+    # 计算平均颜色
+    mean_color = image.mean(dim=(1, 2), keepdim=True)  # [C, 1, 1]
     
-    # 频谱残差显著性检测
-    saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
-    success, saliency_map = saliency.computeSaliency(gray)
+    # 颜色差异
+    diff = (image - mean_color).pow(2).sum(dim=0).sqrt()  # [H, W]
     
-    if not success:
-        # 回退到简单的中心偏好
-        H, W = gray.shape
-        y, x = np.mgrid[0:H, 0:W]
-        cx, cy = W / 2, H / 2
-        saliency_map = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * (min(W, H) / 3) ** 2))
+    # 归一化
+    if diff.max() > 0:
+        diff = diff / diff.max()
     
-    return torch.from_numpy(saliency_map.astype(np.float32)).to(image.device)
+    # 高斯平滑
+    kernel_size = 15
+    sigma = kernel_size / 6.0
+    x = torch.arange(kernel_size, device=image.device) - kernel_size // 2
+    gauss = torch.exp(-x.float() ** 2 / (2 * sigma ** 2))
+    kernel_1d = gauss / gauss.sum()
+    kernel_2d = kernel_1d.unsqueeze(1) * kernel_1d.unsqueeze(0)
+    kernel_2d = kernel_2d.unsqueeze(0).unsqueeze(0)
+    
+    diff = diff.unsqueeze(0).unsqueeze(0)
+    padding = kernel_size // 2
+    diff = F.conv2d(diff, kernel_2d, padding=padding).squeeze()
+    
+    return diff
 
 
 def extract_high_frequency(
     image: torch.Tensor,
-    blur_kernel: int = 15,
 ) -> torch.Tensor:
     """
-    提取高频信息（细节层）。
+    提取高频信息（纯 PyTorch 实现）。
     
-    原图 - 低通滤波 = 高频细节
-    用于细节阶段：在高频信息丰富的区域放置精细笔画。
+    高频信息对应图像的细节和纹理，
+    用于引导细节阶段的笔画放置。
     """
-    import cv2
+    C, H, W = image.shape
     
-    img_np = (image.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-    blurred = cv2.GaussianBlur(img_np, (blur_kernel, blur_kernel), 0)
-    high_freq = img_np.astype(np.float32) - blurred.astype(np.float32)
-    high_freq = np.abs(high_freq).mean(axis=2)
-    high_freq = high_freq / (high_freq.max() + 1e-8)
+    # 低通滤波
+    kernel_size = 9
+    sigma = kernel_size / 4.0
+    x = torch.arange(kernel_size, device=image.device) - kernel_size // 2
+    gauss = torch.exp(-x.float() ** 2 / (2 * sigma ** 2))
+    kernel_1d = gauss / gauss.sum()
+    kernel_2d = kernel_1d.unsqueeze(1) * kernel_1d.unsqueeze(0)
+    kernel_2d = kernel_2d.unsqueeze(0).unsqueeze(0).expand(C, 1, -1, -1)
     
-    return torch.from_numpy(high_freq).to(image.device)
+    img = image.unsqueeze(0)
+    padding = kernel_size // 2
+    low_pass = F.conv2d(img, kernel_2d, padding=padding, groups=C)
+    
+    # 高频 = 原图 - 低通
+    high_freq = (img - low_pass).abs().squeeze(0).mean(dim=0)
+    
+    if high_freq.max() > 0:
+        high_freq = high_freq / high_freq.max()
+    
+    return high_freq
 
 
-def compute_gradient_map(image: torch.Tensor) -> torch.Tensor:
+def sample_from_attention_map(
+    attention_map: torch.Tensor,
+    num_samples: int,
+    temperature: float = 1.0,
+) -> torch.Tensor:
     """
-    计算图像梯度图（Sobel 算子）。
+    从注意力图中采样位置。
     
-    用于确定笔画方向：笔画应沿梯度垂直方向（即沿边缘方向）放置，
-    模拟画家沿轮廓线绘画的习惯。
+    值越大的区域被采样的概率越高，
+    模拟画家在重要区域放置更多笔画的习惯。
     """
-    gray = image.mean(dim=0, keepdim=True).unsqueeze(0)  # [1, 1, H, W]
+    H, W = attention_map.shape
     
-    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
-                           dtype=torch.float32, device=image.device).reshape(1, 1, 3, 3)
-    sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
-                           dtype=torch.float32, device=image.device).reshape(1, 1, 3, 3)
+    # 温度缩放
+    probs = (attention_map.reshape(-1) / max(temperature, 0.01)).softmax(dim=0)
     
-    grad_x = F.conv2d(gray, sobel_x, padding=1)
-    grad_y = F.conv2d(gray, sobel_y, padding=1)
+    # 采样
+    indices = torch.multinomial(probs, num_samples, replacement=True)
     
-    gradient_magnitude = torch.sqrt(grad_x ** 2 + grad_y ** 2 + 1e-8)
-    gradient_direction = torch.atan2(grad_y, grad_x)
+    y_coords = indices // W
+    x_coords = indices % W
     
-    return gradient_magnitude.squeeze(), gradient_direction.squeeze()
+    positions = torch.stack([
+        x_coords.float() / W,
+        y_coords.float() / H,
+    ], dim=1)
+    
+    return positions
 
 
-def sample_point_from_map(prob_map: torch.Tensor) -> Tuple[float, float]:
+def compute_local_gradient_direction(
+    image: torch.Tensor,
+    position: Tuple[float, float],
+) -> float:
     """
-    从概率图中采样一个点。
+    计算目标图像在指定位置的局部梯度方向。
     
-    概率值越高的区域被采样的概率越大，
-    模拟画家在重要区域放置更多笔画。
+    模拟画家沿边缘方向或垂直于边缘方向绘画的习惯。
     """
-    prob = prob_map.cpu().numpy().flatten()
-    prob = prob / (prob.sum() + 1e-8)
-    idx = np.random.choice(len(prob), p=prob)
-    H, W = prob_map.shape
-    y = idx // W
-    x = idx % W
-    return x / W, y / H  # 归一化坐标
+    C, H, W = image.shape
+    px = int(position[0] * (W - 1))
+    py = int(position[1] * (H - 1))
+    
+    gray = image.mean(dim=0)
+    
+    # Sobel 梯度
+    if 1 <= py < H - 1 and 1 <= px < W - 1:
+        dx = gray[py, px + 1] - gray[py, px - 1]
+        dy = gray[py + 1, px] - gray[py - 1, px]
+    else:
+        dx, dy = 0.0, 0.0
+    
+    # 笔画方向垂直于梯度方向（沿边缘方向）
+    angle = float(np.arctan2(-float(dx), float(dy)))
+    angle += np.random.randn() * 0.3  # 少量随机偏移
+    
+    return angle
+
+
+# ===================== 阶段初始化函数 =====================
 
 
 def initialize_strokes_stage1(
     target_image: torch.Tensor,
-    num_strokes: int = 20,
     canvas_size: Tuple[int, int] = (640, 480),
-    num_control_points: int = 5,
+    num_strokes: int = 20,
     max_width: float = 50.0,
     min_width: float = 20.0,
+    num_control_points: int = 5,
     device: str = "cpu",
 ) -> Tuple[List[BrushStroke], List[str]]:
     """
     Stage 1: 铺底色初始化
     
-    策略：
-    1. 提取图像主色调（K-Means 聚类）
-    2. 按颜色区域大小分配笔画数量
-    3. 在每个颜色区域内放置粗大的笔画
-    4. 使用马克笔和水彩笔刷（大面积覆盖）
+    基于颜色聚类：从目标图像提取主色调，
+    在每个颜色区域的中心放置粗笔画。
     
-    模拟人类画家：先用大号画笔铺满底色
+    模拟画家用大号画笔铺底色的过程。
     """
-    # 提取主色调
-    palette = extract_color_palette(target_image, num_colors=min(8, num_strokes))
+    # 提取颜色调色板
+    palette = extract_color_palette(target_image, num_colors=min(num_strokes, 16))
     
-    # 计算颜色区域图
-    img_flat = target_image.permute(1, 2, 0).reshape(-1, 3)
-    palette_flat = palette
-    
-    # 为每个像素分配最近的调色板颜色
-    dists = torch.cdist(img_flat.unsqueeze(0), palette_flat.unsqueeze(0)).squeeze(0)
-    labels = dists.argmin(dim=1)
-    
-    H, W = target_image.shape[1], target_image.shape[2]
-    label_map = labels.reshape(H, W)
-    
-    # 按区域大小分配笔画数量
-    label_counts = torch.bincount(labels, minlength=len(palette))
-    total_count = label_counts.sum().float()
-    stroke_counts = (label_counts.float() / total_count * num_strokes).long()
-    stroke_counts = stroke_counts.clamp(min=1)
-    
-    # 调整总数
-    while stroke_counts.sum() > num_strokes:
-        max_idx = stroke_counts.argmax()
-        stroke_counts[max_idx] -= 1
-    while stroke_counts.sum() < num_strokes:
-        min_idx = (label_counts.float() / (stroke_counts.float() + 1)).argmax()
-        stroke_counts[min_idx] += 1
+    # 计算显著性图
+    saliency = extract_saliency(target_image)
     
     strokes = []
     brush_names = []
     
-    for color_idx in range(len(palette)):
-        count = stroke_counts[color_idx].item()
-        if count == 0:
-            continue
+    for i in range(num_strokes):
+        # 选择颜色
+        color_idx = i % len(palette)
+        color_rgb = palette[color_idx].clone()
+        color_rgb += torch.randn(3, device=device) * 0.03
+        color_rgb = color_rgb.clamp(0, 1)
+        color = torch.cat([color_rgb, torch.tensor([1.0], device=device)])
         
-        color_rgb = palette[color_idx]
-        color = torch.cat([color_rgb, torch.tensor([0.85], device=device)])  # 略微透明
+        # 采样位置（从显著性图中采样）
+        positions = sample_from_attention_map(saliency, 1, temperature=0.8)
+        start_x, start_y = positions[0][0].item(), positions[0][1].item()
         
-        # 获取该颜色区域的像素位置
-        mask = (label_map == color_idx)
-        positions = mask.nonzero().float()  # [N, 2] (y, x)
+        # 笔画方向（随机，底色阶段不需要精确方向）
+        angle = np.random.uniform(0, 2 * np.pi)
+        length = np.random.uniform(0.1, 0.4)
         
-        if positions.shape[0] < 2:
-            continue
+        # 构建控制点
+        raw_points = torch.zeros(num_control_points, 2, device=device)
+        for j in range(num_control_points):
+            t = j / (num_control_points - 1)
+            offset_x = start_x + length * t * np.cos(angle) + np.random.randn() * 0.02
+            offset_y = start_y + length * t * np.sin(angle) + np.random.randn() * 0.02
+            raw_points[j] = torch.tensor([offset_x, offset_y])
         
-        for _ in range(count):
-            # 在颜色区域内随机采样起点
-            idx = np.random.randint(0, positions.shape[0])
-            start_y = positions[idx, 0].item() / H
-            start_x = positions[idx, 1].item() / W
-            
-            # 随机方向和长度
-            angle = np.random.uniform(0, 2 * np.pi)
-            length = np.random.uniform(0.1, 0.4)
-            
-            # 构建控制点
-            raw_points = torch.zeros(num_control_points, 2, device=device)
-            for j in range(num_control_points):
-                t = j / (num_control_points - 1)
-                offset_x = start_x + length * t * np.cos(angle) + np.random.randn() * 0.02
-                offset_y = start_y + length * t * np.sin(angle) + np.random.randn() * 0.02
-                raw_points[j] = torch.tensor([offset_x, offset_y])
-            
-            # sigmoid 逆变换
-            raw_points = torch.logit(torch.clamp(raw_points, 0.01, 0.99))
-            
-            width = np.random.uniform(min_width, max_width)
-            
-            stroke = BrushStroke(
-                num_control_points=num_control_points,
-                canvas_size=canvas_size,
-                init_width=width,
-                init_color=color,
-                init_opacity=0.8,
-                device=device,
-            )
-            stroke.raw_control_points = nn.Parameter(raw_points)
-            
-            strokes.append(stroke)
-            # 底色阶段交替使用马克笔和水彩
-            brush_names.append("marker" if _ % 2 == 0 else "watercolor")
+        raw_points = torch.logit(torch.clamp(raw_points, 0.01, 0.99))
+        
+        width = np.random.uniform(min_width, max_width)
+        
+        stroke = BrushStroke(
+            num_control_points=num_control_points,
+            canvas_size=canvas_size,
+            init_width=width,
+            init_color=color,
+            init_opacity=0.8,
+            device=device,
+        )
+        stroke.raw_control_points = nn.Parameter(raw_points)
+        
+        strokes.append(stroke)
+        # 底色阶段使用马克笔和水彩
+        brush_names.append(["marker", "watercolor", "airbrush"][i % 3])
     
     return strokes, brush_names
 
 
 def initialize_strokes_stage2(
     target_image: torch.Tensor,
-    residual_image: Optional[torch.Tensor] = None,
-    num_strokes: int = 100,
     canvas_size: Tuple[int, int] = (640, 480),
-    num_control_points: int = 7,
+    num_strokes: int = 100,
     max_width: float = 15.0,
     min_width: float = 5.0,
+    num_control_points: int = 7,
     device: str = "cpu",
+    rendered_image: Optional[torch.Tensor] = None,
 ) -> Tuple[List[BrushStroke], List[str]]:
     """
     Stage 2: 形体刻画初始化
     
-    策略：
-    1. 使用边缘检测确定轮廓位置
-    2. 使用梯度方向确定笔画方向（沿边缘方向）
-    3. 使用显著性图确定笔画密度
-    4. 使用压感笔刷（变宽效果更自然）
-    
-    模拟人类画家：在底色基础上勾勒形体轮廓和色块过渡
+    基于边缘检测和残差注意力：
+    - 在边缘区域放置笔画（模拟画家勾勒轮廓）
+    - 在残差大的区域放置笔画（补充底色未覆盖的区域）
+    - 笔画方向沿边缘方向
     """
-    # 使用残差图像（如果有）或原始图像
-    ref_image = residual_image if residual_image is not None else target_image
+    # 计算边缘图
+    edges = extract_edges_torch(target_image)
     
-    # 提取边缘和梯度
-    edges = extract_edges(ref_image)
-    grad_mag, grad_dir = compute_gradient_map(ref_image)
-    
-    # 计算显著性
-    try:
-        saliency = extract_saliency(ref_image)
-    except Exception:
-        # 回退到梯度幅度作为显著性
-        saliency = grad_mag / (grad_mag.max() + 1e-8)
-    
-    # 综合概率图：边缘 + 梯度 + 显著性
-    prob_map = edges * 0.4 + (grad_mag / (grad_mag.max() + 1e-8)) * 0.3 + saliency * 0.3
-    prob_map = prob_map / (prob_map.max() + 1e-8)
+    # 计算残差注意力
+    if rendered_image is not None:
+        residual = (target_image - rendered_image).abs().mean(dim=0)
+        if residual.max() > 0:
+            residual = residual / residual.max()
+        # 组合边缘和残差
+        attention = edges * 0.4 + residual * 0.6
+    else:
+        attention = edges
     
     strokes = []
     brush_names = []
     
     for i in range(num_strokes):
-        # 从概率图采样起点
-        start_x, start_y = sample_point_from_map(prob_map)
+        # 从注意力图采样位置
+        positions = sample_from_attention_map(attention, 1, temperature=0.5)
+        start_x, start_y = positions[0][0].item(), positions[0][1].item()
         
-        # 获取该点的梯度方向（笔画应沿边缘方向）
-        py = int(start_y * (edges.shape[0] - 1))
-        px = int(start_x * (edges.shape[1] - 1))
-        local_grad_dir = grad_dir[py, px].item()
+        # 沿边缘方向放置笔画
+        stroke_angle = compute_local_gradient_direction(target_image, (start_x, start_y))
         
-        # 笔画方向 = 梯度垂直方向（沿边缘）
-        stroke_angle = local_grad_dir + np.pi / 2 + np.random.randn() * 0.3
-        
-        # 笔画长度
+        # 中等长度
         length = np.random.uniform(0.05, 0.2)
         
         # 采样颜色
         img_y = int(start_y * (target_image.shape[1] - 1))
         img_x = int(start_x * (target_image.shape[2] - 1))
         color_rgb = target_image[:, img_y, img_x].clone()
-        color_rgb += torch.randn(3, device=device) * 0.03
+        color_rgb += torch.randn(3, device=device) * 0.02
         color_rgb = color_rgb.clamp(0, 1)
-        color = torch.cat([color_rgb, torch.tensor([0.9], device=device)])
+        color = torch.cat([color_rgb, torch.tensor([1.0], device=device)])
         
         # 构建控制点
         raw_points = torch.zeros(num_control_points, 2, device=device)
@@ -367,63 +403,53 @@ def initialize_strokes_stage2(
         
         strokes.append(stroke)
         # 刻画阶段使用压感笔和马克笔
-        brush_names.append("pressure" if i % 3 != 0 else "marker")
+        brush_names.append(["pressure", "pressure_sharp", "marker"][i % 3])
     
     return strokes, brush_names
 
 
 def initialize_strokes_stage3(
     target_image: torch.Tensor,
-    residual_image: Optional[torch.Tensor] = None,
-    num_strokes: int = 300,
     canvas_size: Tuple[int, int] = (640, 480),
-    num_control_points: int = 9,
+    num_strokes: int = 300,
     max_width: float = 3.0,
     min_width: float = 1.0,
+    num_control_points: int = 9,
     device: str = "cpu",
+    rendered_image: Optional[torch.Tensor] = None,
 ) -> Tuple[List[BrushStroke], List[str]]:
     """
     Stage 3: 细节线稿初始化
     
-    策略：
-    1. 使用高频信息图确定细节区域
-    2. 使用精细的梯度方向引导
-    3. 使用铅笔和细压感笔刷
-    4. 更短、更细的笔画
-    
-    模拟人类画家：在形体基础上添加细节线条和纹理
+    基于高频信息和残差注意力：
+    - 在高频区域放置细笔画（模拟画家添加纹理和细节）
+    - 在残差大的区域放置笔画（补充前面阶段未覆盖的细节）
+    - 笔画方向沿梯度方向
     """
-    ref_image = residual_image if residual_image is not None else target_image
+    # 计算高频信息
+    high_freq = extract_high_frequency(target_image)
     
-    # 提取高频信息
-    high_freq = extract_high_frequency(ref_image)
-    
-    # 提取边缘
-    edges = extract_edges(ref_image, low_threshold=30, high_threshold=100)
-    
-    # 梯度方向
-    grad_mag, grad_dir = compute_gradient_map(ref_image)
-    
-    # 综合概率图
-    prob_map = high_freq * 0.5 + edges * 0.3 + (grad_mag / (grad_mag.max() + 1e-8)) * 0.2
-    prob_map = prob_map / (prob_map.max() + 1e-8)
+    # 计算残差注意力
+    if rendered_image is not None:
+        residual = (target_image - rendered_image).abs().mean(dim=0)
+        if residual.max() > 0:
+            residual = residual / residual.max()
+        attention = high_freq * 0.3 + residual * 0.7
+    else:
+        attention = high_freq
     
     strokes = []
     brush_names = []
     
     for i in range(num_strokes):
-        # 从概率图采样
-        start_x, start_y = sample_point_from_map(prob_map)
+        # 从注意力图采样位置
+        positions = sample_from_attention_map(attention, 1, temperature=0.3)
+        start_x, start_y = positions[0][0].item(), positions[0][1].item()
         
-        # 获取梯度方向
-        py = int(start_y * (edges.shape[0] - 1))
-        px = int(start_x * (edges.shape[1] - 1))
-        local_grad_dir = grad_dir[py, px].item()
+        # 沿梯度方向放置笔画
+        stroke_angle = compute_local_gradient_direction(target_image, (start_x, start_y))
         
-        # 笔画方向
-        stroke_angle = local_grad_dir + np.pi / 2 + np.random.randn() * 0.2
-        
-        # 更短的笔画
+        # 短笔画
         length = np.random.uniform(0.02, 0.1)
         
         # 采样颜色
