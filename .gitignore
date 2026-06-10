@@ -45,3 +45,6 @@ venv/
 *.log
 test_output/
 test_input.png
+cat_output/
+test_output/
+test_input.png
