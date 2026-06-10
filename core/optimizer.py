@@ -17,6 +17,8 @@
 
 import os
 import time
+import logging
+logger = logging.getLogger(__name__)
 import copy
 from typing import List, Optional, Tuple, Dict
 
@@ -24,6 +26,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+import math
 
 from brushes.base import BrushStroke
 from core.renderer import DifferentiableRenderer
@@ -285,7 +288,8 @@ class MultiStageOptimizer:
             # 释放 GPU 内存
             del stage_renderer, stage_loss_fn
             if self.device == "cuda":
-                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            torch.cuda.empty_cache()
         
         # 最终渲染
         final_renderer = DifferentiableRenderer(
@@ -334,7 +338,7 @@ class MultiStageOptimizer:
         )
         
         best_loss = float('inf')
-        best_strokes = None
+        best_strokes_data = None
         loss_history = []
         no_improve_count = 0
         
@@ -363,7 +367,7 @@ class MultiStageOptimizer:
             # 记录最佳结果
             if loss_val < best_loss:
                 best_loss = loss_val
-                best_strokes = copy.deepcopy(strokes)
+                best_strokes_data = [(s.raw_control_points.data.clone(), s.raw_width.data.clone(), s.raw_color.data.clone(), s.raw_opacity.data.clone()) for s in strokes]
                 no_improve_count = 0
             else:
                 no_improve_count += 1
@@ -394,12 +398,13 @@ class MultiStageOptimizer:
                     pass
         
         # 使用最佳结果
-        if best_strokes is not None:
-            for i, (stroke, best_stroke) in enumerate(zip(strokes, best_strokes)):
-                stroke.raw_control_points.data.copy_(best_stroke.raw_control_points.data)
-                stroke.raw_width.data.copy_(best_stroke.raw_width.data)
-                stroke.raw_color.data.copy_(best_stroke.raw_color.data)
-                stroke.raw_opacity.data.copy_(best_stroke.raw_opacity.data)
+        if best_strokes_data is not None:
+            for i, stroke in enumerate(strokes):
+                cp, w, c, o = best_strokes_data[i]
+                stroke.raw_control_points.data.copy_(cp)
+                stroke.raw_width.data.copy_(w)
+                stroke.raw_color.data.copy_(c)
+                stroke.raw_opacity.data.copy_(o)
         
         return {
             "strokes": strokes,

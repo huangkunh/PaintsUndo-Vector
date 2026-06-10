@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 #!/usr/bin/env python3
 """
 PaintsUndo-Vector Gradio Web UI
@@ -36,17 +38,17 @@ PRESETS = {
     "快速预览": {
         "num_strokes_s1": 16, "num_strokes_s2": 64, "num_strokes_s3": 256,
         "max_width_s1": 50.0, "max_width_s2": 15.0, "max_width_s3": 3.0,
-        "num_iter": 200, "lr": 1.0,
+        "num_iter": 200, "lr": 0.1,
     },
     "标准质量": {
         "num_strokes_s1": 32, "num_strokes_s2": 128, "num_strokes_s3": 512,
         "max_width_s1": 50.0, "max_width_s2": 15.0, "max_width_s3": 3.0,
-        "num_iter": 500, "lr": 1.0,
+        "num_iter": 500, "lr": 0.1,
     },
     "精细还原": {
         "num_strokes_s1": 64, "num_strokes_s2": 256, "num_strokes_s3": 1024,
         "max_width_s1": 50.0, "max_width_s2": 15.0, "max_width_s3": 3.0,
-        "num_iter": 1000, "lr": 0.5,
+        "num_iter": 1000, "lr": 0.05,
     },
 }
 
@@ -120,7 +122,7 @@ def run_optimization(
             max_width=max_width_s3,
             min_width=max_width_s3 * 0.3,
             num_control_points=9,
-            resolution=(1024, 1024),
+            resolution=(512, 512),
             num_iterations=int(num_iter * 2),
             lr=lr * 0.5,
             lr_width=lr * 0.05,
@@ -131,6 +133,7 @@ def run_optimization(
     
     # 创建临时输出目录
     output_dir = tempfile.mkdtemp(prefix="paints_undo_")
+    os.chmod(output_dir, 0o700)
     
     # 进度回调
     stage_previews = {}
@@ -176,7 +179,7 @@ def run_optimization(
         final_rendered = final_renderer.render_multi_brush(stroke_groups)
         
         # 转换为 PIL 图像
-        rendered_np = final_rendered.permute(1, 2, 0).cpu().clamp(0, 1).numpy()
+        rendered_np = final_rendered.permute(1, 2, 0).cpu().clamp(0, 1).detach().numpy()
         rendered_np = (rendered_np * 255).astype(np.uint8)
         output_pil = Image.fromarray(rendered_np)
         
@@ -243,11 +246,7 @@ def apply_preset(preset_name):
 
 with gr.Blocks(
     title="PaintsUndo-Vector",
-    theme=gr.themes.Soft(),
-    css="""
-    .main-title { text-align: center; margin-bottom: 10px; }
-    .preset-btn { min-width: 100px; }
-    """
+
 ) as demo:
     
     gr.Markdown(
@@ -291,7 +290,7 @@ with gr.Blocks(
             
             with gr.Accordion("通用设置", open=True):
                 num_iter = gr.Slider(100, 2000, value=500, step=50, label="每阶段迭代次数")
-                lr = gr.Slider(0.01, 2.0, value=1.0, step=0.01, label="学习率")
+                lr = gr.Slider(0.01, 2.0, value=0.1, step=0.01, label="学习率")
                 device_choice = gr.Radio(
                     ["auto", "cpu", "cuda"],
                     value="auto",
@@ -365,4 +364,5 @@ with gr.Blocks(
 
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
+    # For 4GB VRAM, also set: set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=False, theme=gr.themes.Soft())

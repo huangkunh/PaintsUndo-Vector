@@ -52,8 +52,8 @@ def create_comparison_image(
     rendered: torch.Tensor,
 ) -> Image.Image:
     """创建对比图像：目标 vs 渲染"""
-    target_np = (target.permute(1, 2, 0).cpu().clamp(0, 1).numpy() * 255).astype(np.uint8)
-    rendered_np = (rendered.permute(1, 2, 0).cpu().clamp(0, 1).numpy() * 255).astype(np.uint8)
+    target_np = (target.permute(1, 2, 0).cpu().clamp(0, 1).detach().numpy() * 255).astype(np.uint8)
+    rendered_np = (rendered.permute(1, 2, 0).cpu().clamp(0, 1).detach().numpy() * 255).astype(np.uint8)
     
     target_img = Image.fromarray(target_np)
     rendered_img = Image.fromarray(rendered_np)

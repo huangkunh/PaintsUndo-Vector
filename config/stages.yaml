@@ -1,0 +1,55 @@
+# Stage configuration
+stages:
+  - name: "铺底色"
+    num_strokes: 32
+    max_width: 50.0
+    min_width: 20.0
+    num_control_points: 5
+    resolution: [256, 256]
+    num_iterations: 500
+    lr: 1.0
+    lr_width: 0.1
+    lr_color: 0.01
+    brush_names: ["marker", "watercolor", "airbrush"]
+    lambda_pixel: 2.0
+    lambda_perceptual: 5.0
+    lambda_ssim: 0.5
+    lambda_color: 2.0
+    lambda_length: 0.01
+    lambda_smooth: 0.005
+
+  - name: "形体刻画"
+    num_strokes: 128
+    max_width: 15.0
+    min_width: 5.0
+    num_control_points: 7
+    resolution: [512, 512]
+    num_iterations: 800
+    lr: 1.0
+    lr_width: 0.1
+    lr_color: 0.01
+    brush_names: ["pressure", "pressure_sharp", "marker"]
+    lambda_pixel: 1.0
+    lambda_perceptual: 10.0
+    lambda_ssim: 2.0
+    lambda_color: 1.0
+    lambda_length: 0.005
+    lambda_smooth: 0.003
+
+  - name: "细节线稿"
+    num_strokes: 512
+    max_width: 3.0
+    min_width: 1.0
+    num_control_points: 9
+    resolution: [1024, 1024]
+    num_iterations: 1000
+    lr: 0.5
+    lr_width: 0.05
+    lr_color: 0.005
+    brush_names: ["pencil", "pressure_sharp", "hatching"]
+    lambda_pixel: 0.5
+    lambda_perceptual: 15.0
+    lambda_ssim: 3.0
+    lambda_color: 0.5
+    lambda_length: 0.003
+    lambda_smooth: 0.001

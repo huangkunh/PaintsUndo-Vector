@@ -1,0 +1,31 @@
+# Presets configuration
+presets:
+  "快速预览":
+    num_strokes_s1: 16
+    num_strokes_s2: 64
+    num_strokes_s3: 256
+    max_width_s1: 50.0
+    max_width_s2: 15.0
+    max_width_s3: 3.0
+    num_iter: 200
+    lr: 1.0
+
+  "标准质量":
+    num_strokes_s1: 32
+    num_strokes_s2: 128
+    num_strokes_s3: 512
+    max_width_s1: 50.0
+    max_width_s2: 15.0
+    max_width_s3: 3.0
+    num_iter: 500
+    lr: 1.0
+
+  "精细还原":
+    num_strokes_s1: 64
+    num_strokes_s2: 256
+    num_strokes_s3: 1024
+    max_width_s1: 50.0
+    max_width_s2: 15.0
+    max_width_s3: 3.0
+    num_iter: 1000
+    lr: 0.5

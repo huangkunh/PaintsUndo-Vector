@@ -57,6 +57,7 @@ class VGGPerceptualLoss(nn.Module):
     def __init__(self, device: str = "cpu"):
         super().__init__()
         self.device = device
+        self.device = device
         self.model = self._build_vgg().to(device).eval()
         for p in self.model.parameters():
             p.requires_grad = False
@@ -81,9 +82,9 @@ class VGGPerceptualLoss(nn.Module):
         # 提取 relu1_2, relu2_2, relu3_3 的特征
         features = vgg.features
         
-        self.slice1 = nn.Sequential(*list(features.children())[:4])   # relu1_2
-        self.slice2 = nn.Sequential(*list(features.children())[4:9])  # relu2_2
-        self.slice3 = nn.Sequential(*list(features.children())[9:16]) # relu3_3
+        self.slice1 = nn.Sequential(*list(features.children())[:4])   # relu1_2.to(device)
+        self.slice2 = nn.Sequential(*list(features.children())[4:9])  # relu2_2.to(device)
+        self.slice3 = nn.Sequential(*list(features.children())[9:16]).to(self.device)
         
         return nn.Module()  # 占位，实际使用 slice
     
@@ -97,7 +98,7 @@ class VGGPerceptualLoss(nn.Module):
         t = (target - self.mean) / self.std
         
         # 多层特征提取
-        loss = torch.tensor(0.0, device=self.device)
+        loss = torch.tensor(0.0, device=rendered.device)
         
         # Layer 1
         r1 = self.slice1(r)
@@ -146,6 +147,7 @@ class LPIPSLoss(nn.Module):
             t = target * 2 - 1
             return self.model(r, t).mean()
         else:
+            self.model.to(rendered.device)
             return self.model(rendered, target)
 
 
@@ -177,7 +179,7 @@ class SSIMLoss(nn.Module):
             target = target.unsqueeze(0)
         
         C = rendered.shape[1]
-        window = self._window.expand(C, 1, -1, -1).to(self.device)
+        window = self._window.expand(C, 1, -1, -1).to(rendered.device)
         
         # 计算均值
         mu_r = F.conv2d(rendered, window, padding=self.window_size // 2, groups=C)
@@ -218,10 +220,10 @@ class ColorHistogramLoss(nn.Module):
     def _soft_histogram(self, x: torch.Tensor, num_bins: int) -> torch.Tensor:
         """可微软直方图"""
         x = x.reshape(-1)
-        bins = torch.linspace(0, 1, num_bins + 1, device=self.device)
+        bins = torch.linspace(0, 1, num_bins + 1, device=x.device)
         sigma = 1.0 / num_bins
         
-        hist = torch.zeros(num_bins, device=self.device)
+        hist = torch.zeros(num_bins, device=x.device)
         for i in range(num_bins):
             center = (bins[i] + bins[i + 1]) / 2
             hist[i] = torch.exp(-0.5 * ((x - center) / sigma) ** 2).sum()
@@ -234,7 +236,7 @@ class ColorHistogramLoss(nn.Module):
             rendered = rendered[0]
             target = target[0]
         
-        loss = torch.tensor(0.0, device=self.device)
+        loss = torch.tensor(0.0, device=rendered.device)
         for c in range(3):
             hist_r = self._soft_histogram(rendered[c], self.num_bins)
             hist_t = self._soft_histogram(target[c], self.num_bins)
@@ -339,6 +341,15 @@ class CombinedLoss(nn.Module):
             strokes: 笔画列表
             stage: 当前优化阶段
         """
+        # Clamp rendered to prevent NaN
+        rendered = rendered.clamp(0.0, 1.0)
+
+        # NaN protection
+        if torch.isnan(rendered).any() or torch.isinf(rendered).any():
+            fake = rendered.sum() * 0
+            return fake, {"pixel": 1e3, "perceptual": 1e3, "ssim": 1e3,
+                           "color_hist": 0.0, "length": 0.0, "smooth": 0.0, "total": 1e3}
+
         l_pixel = self.pixel_loss(rendered, target)
         l_perceptual = self.perceptual_loss(rendered, target)
         l_ssim = self.ssim_loss(rendered, target)

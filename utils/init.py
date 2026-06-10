@@ -23,6 +23,7 @@ import torch.nn.functional as F
 import numpy as np
 
 from brushes.base import BrushStroke
+from utils.image import resize_image
 
 
 def image_to_tensor(image_path: str, size: Tuple[int, int], device: str = "cpu") -> torch.Tensor:
@@ -263,6 +264,7 @@ def initialize_strokes_stage1(
     min_width: float = 20.0,
     num_control_points: int = 5,
     device: str = "cpu",
+    rendered_image: Optional[torch.Tensor] = None,
 ) -> Tuple[List[BrushStroke], List[str]]:
     """
     Stage 1: 铺底色初始化
@@ -349,6 +351,14 @@ def initialize_strokes_stage2(
     
     # 计算残差注意力
     if rendered_image is not None:
+        # Resize rendered_image to match target_image
+        if rendered_image.shape != target_image.shape:
+            if rendered_image.dim() == 3:
+                rendered_image = rendered_image.unsqueeze(0)
+        _target = target_image.unsqueeze(0) if target_image.dim() == 3 else target_image
+        rendered_image = F.interpolate(rendered_image, size=_target.shape[2:], mode='bilinear', align_corners=False)
+        if target_image.dim() == 3:
+            rendered_image = rendered_image.squeeze(0)
         residual = (target_image - rendered_image).abs().mean(dim=0)
         if residual.max() > 0:
             residual = residual / residual.max()
@@ -356,7 +366,6 @@ def initialize_strokes_stage2(
         attention = edges * 0.4 + residual * 0.6
     else:
         attention = edges
-    
     strokes = []
     brush_names = []
     
@@ -431,13 +440,20 @@ def initialize_strokes_stage3(
     
     # 计算残差注意力
     if rendered_image is not None:
+        # Resize rendered_image to match target_image
+        if rendered_image.shape != target_image.shape:
+            if rendered_image.dim() == 3:
+                rendered_image = rendered_image.unsqueeze(0)
+        _target = target_image.unsqueeze(0) if target_image.dim() == 3 else target_image
+        rendered_image = F.interpolate(rendered_image, size=_target.shape[2:], mode='bilinear', align_corners=False)
+        if target_image.dim() == 3:
+            rendered_image = rendered_image.squeeze(0)
         residual = (target_image - rendered_image).abs().mean(dim=0)
         if residual.max() > 0:
             residual = residual / residual.max()
         attention = high_freq * 0.3 + residual * 0.7
     else:
         attention = high_freq
-    
     strokes = []
     brush_names = []
     
