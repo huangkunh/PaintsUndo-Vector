@@ -129,6 +129,70 @@ class DifferentiableRenderer(nn.Module):
         result = accum_color * accum_alpha + bg_color.expand(3, H, W) * (1 - accum_alpha)
         return torch.clamp(result, 0, 1)
     
+    def render_on_background(self, strokes, brush_names, background):
+        """
+        在给定背景上渲染笔画（用于贪心放置）。
+        background: [3, H, W] 已渲染的背景图像（无需梯度）
+        返回: [3, H, W] 合成后的图像
+        """
+        W, H = self.canvas_size
+        pixels = self._pixels
+        
+        accum_color = background.detach().clone()
+        accum_alpha = torch.ones(1, H, W, device=self.device)
+        
+        for stroke, brush_name in zip(strokes, brush_names):
+            cp = stroke.get_pixel_control_points()
+            width = stroke.width
+            color = stroke.color
+            opacity = stroke.opacity
+            
+            ns = max(8, len(cp) * 3)
+            curve = self._sample_bezier(cp, ns)
+            if curve.shape[0] < 2:
+                continue
+            
+            diff = pixels.unsqueeze(1) - curve.unsqueeze(0)
+            dist_sq = (diff ** 2).sum(dim=2)
+            min_dist = dist_sq.min(dim=1)[0].sqrt().reshape(H, W)
+            
+            if brush_name in ("pressure", "pressure_sharp"):
+                nearest_idx = dist_sq.argmin(dim=1)
+                t_vals = nearest_idx.float() / (ns - 1)
+                if brush_name == "pressure":
+                    pressure = torch.sin(torch.pi * t_vals)
+                else:
+                    pressure = 1.0 - torch.exp(-3.0 * t_vals)
+                local_width = (pressure * width).reshape(H, W)
+            else:
+                local_width = width
+            
+            half_w = local_width / 2.0
+            aa = torch.clamp(half_w * 0.15, min=self.antialias * 0.5)
+            
+            t = torch.clamp((half_w + aa - min_dist) / (2 * aa + 1e-8), 0.0, 1.0)
+            alpha = t * t * (3 - 2 * t) * opacity * color[3]
+            
+            if brush_name == "watercolor":
+                alpha = alpha * 0.6
+            elif brush_name == "airbrush":
+                sigma = width / 2.0
+                alpha = torch.exp(-0.5 * (min_dist / sigma) ** 2) * opacity * color[3] * 0.5
+            
+            new_alpha = alpha.unsqueeze(0) + accum_alpha * (1 - alpha.unsqueeze(0))
+            new_alpha = torch.clamp(new_alpha, 0, 1)
+            safe_new_alpha = torch.where(new_alpha > 1e-6, new_alpha, torch.ones_like(new_alpha))
+            
+            new_color = (color[:3].unsqueeze(1).unsqueeze(2) * alpha.unsqueeze(0) + 
+                        accum_color * accum_alpha * (1 - alpha.unsqueeze(0))) / safe_new_alpha
+            
+            accum_alpha = new_alpha
+            accum_color = new_color
+        
+        bg_color = torch.tensor(self.background_color, device=self.device).view(3, 1, 1)
+        result = accum_color * accum_alpha + bg_color.expand(3, H, W) * (1 - accum_alpha)
+        return torch.clamp(result, 0, 1)
+    
     @staticmethod
     def _sample_bezier(cp, num_samples=32):
         n = cp.shape[0]
